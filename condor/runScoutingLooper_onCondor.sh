@@ -56,7 +56,7 @@ then
    then
       condor_submit condor/runScoutingLooper_onCondor2023.sub
    else
-      condor_submit condor/runScoutingLooper_onCondor.sub
+      condor_submit /home/users/garciaja/run3Scouting/run3_scouting/condor/runScoutingLooper_onCondor_BToPhi.sub
    fi
 else
    sh condor/create_package.sh
@@ -64,6 +64,6 @@ else
    then
       condor_submit condor/runScoutingLooper_onCondor2023.sub
    else
-      condor_submit condor/runScoutingLooper_onCondor.sub
+      condor_submit /home/users/garciaja/run3Scouting/run3_scouting/condor/runScoutingLooper_onCondor_BToPhi.sub
    fi
 fi

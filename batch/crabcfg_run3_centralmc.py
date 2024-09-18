@@ -26,6 +26,7 @@ ntuple_version = "5p0"
 # Setup working environment
 import os
 base = os.environ["CMSSW_BASE"]
+print(base)
 #if not os.path.exists(base + '/src/centralTasks'):
 #
 #    os.mkdir(base + '/src/centralTasks')
@@ -121,6 +122,7 @@ if (len(sys.argv)>2):
         mass_points.append(['50p0', '10'])
         mass_points.append(['50p0', '100'])
         mass_points.append(['50p0', '1000'])
+        
         for [m,t] in mass_points:
             config_list.append(config)
             config_list[-1].JobType.pyCfgParams=["era={}".format(era),"data=False",]
@@ -138,33 +140,95 @@ if (len(sys.argv)>2):
                 config_list[-1].Data.inputDataset = dataset_name
             config_list[-1].General.requestName = 'centralSkim__{}_{}_m-{}_ctau-{}mm_{}'.format(signal, era, m, t, ntuple_version)
             print(config)
-            crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
+            #crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
     elif "BToPhi" in sys.argv[2]:
-        # This setup is provisional as it is tested with private signal crab produced samples
-        #   -> Will be replaced by central datasets when done
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_privBToPhi_v'+ntuple_version # DB no
-        config.Data.inputDBS = 'phys03'
-        config.Data.splitting = 'FileBased'
+        config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_BToPhi_" + str(year) + "_v"+ntuple_version 
+        config.Data.inputDBS = 'global'
         config.Data.publication = True
-        config.Data.unitsPerJob = int(100) # Increased to match 10 jobs per file aprox
-        config.Data.outputDatasetTag = "private-Skim_{era}-v1".format(era=era)
-        if era=="2022":
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-1mm', '/BToPhi_MPhi-2p0_ctau-1mm-pythia8/Run3Scouting-private-Run3Summer22-AODSIM-b87ef10f6cfee71a9c25d28c950fbc4d/USER'])
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-10mm', '/BToPhi_MPhi-2p0_ctau-10mm-pythia8/Run3Scouting-private-Run3Summer22-AODSIM-b87ef10f6cfee71a9c25d28c950fbc4d/USER'])
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-100mm', '/BToPhi_MPhi-2p0_ctau-100mm-pythia8/Run3Scouting-private-Run3Summer22-AODSIM-b87ef10f6cfee71a9c25d28c950fbc4d/USER'])
-        elif era=="2022postEE":
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-1mm', '/BToPhi_MPhi-2p0_ctau-1mm-pythia8/Run3Scouting-private-Run3Summer22EE-AODSIM-59a22edf0600a784f6c900595d24e883/USER'])
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-10mm', '/BToPhi_MPhi-2p0_ctau-10mm-pythia8/Run3Scouting-private-Run3Summer22EE-AODSIM-59a22edf0600a784f6c900595d24e883/USER'])
-            mass_points.append(['BToPhi_MPhi-2p0_ctau-100mm', '/BToPhi_MPhi-2p0_ctau-100mm-pythia8/Run3Scouting-private-Run3Summer22EE-AODSIM-59a22edf0600a784f6c900595d24e883/USER'])
-        for [signal_name,dataset_name] in mass_points:
+        # Set the points to produce
+        mass_points.append(['0p25', '0p0'])
+        mass_points.append(['0p25', '0p1'])
+        mass_points.append(['0p25', '100'])
+        mass_points.append(['0p25', '10'])
+        mass_points.append(['0p25', '1'])
+        mass_points.append(['0p3', '0p0'])
+        mass_points.append(['0p3', '0p1'])
+        mass_points.append(['0p3', '100'])
+        mass_points.append(['0p3', '10'])
+        mass_points.append(['0p3', '1'])
+        mass_points.append(['0p4', '0p0'])
+        mass_points.append(['0p4', '0p1'])
+        mass_points.append(['0p4', '100'])
+        mass_points.append(['0p4', '10'])
+        mass_points.append(['0p4', '1'])
+        mass_points.append(['0p5', '0p0'])
+        mass_points.append(['0p5', '0p1'])
+        mass_points.append(['0p5', '100'])
+        mass_points.append(['0p5', '10'])
+        mass_points.append(['0p5', '1'])
+        mass_points.append(['0p6', '0p0'])
+        mass_points.append(['0p6', '0p1'])
+        mass_points.append(['0p6', '100'])
+        mass_points.append(['0p6', '10'])
+        mass_points.append(['0p6', '1'])
+        mass_points.append(['0p7', '0p0'])
+        mass_points.append(['0p7', '0p1'])
+        mass_points.append(['0p7', '100'])
+        mass_points.append(['0p7', '10'])
+        mass_points.append(['0p7', '1'])
+        mass_points.append(['0p9', '0p0'])
+        mass_points.append(['0p9', '0p1'])
+        mass_points.append(['0p9', '100'])
+        mass_points.append(['0p9', '10'])
+        mass_points.append(['0p9', '1'])
+        mass_points.append(['1p25', '0p0'])
+        mass_points.append(['1p25', '0p1'])
+        mass_points.append(['1p25', '100'])
+        mass_points.append(['1p25', '10'])
+        mass_points.append(['1p25', '1'])
+        mass_points.append(['1p5', '0p0'])
+        mass_points.append(['1p5', '0p1'])
+        mass_points.append(['1p5', '100'])
+        mass_points.append(['1p5', '10'])
+        mass_points.append(['1p5', '1'])
+        mass_points.append(['2p0', '0p0'])
+        mass_points.append(['2p0', '0p1'])
+        mass_points.append(['2p0', '100'])
+        mass_points.append(['2p0', '10'])
+        mass_points.append(['2p0', '1'])
+        mass_points.append(['2p85', '0p0'])
+        mass_points.append(['2p85', '0p1'])
+        mass_points.append(['2p85', '100'])
+        mass_points.append(['2p85', '10'])
+        mass_points.append(['2p85', '1'])
+        mass_points.append(['3p35', '0p0'])
+        mass_points.append(['3p35', '0p1'])
+        mass_points.append(['3p35', '100'])
+        mass_points.append(['3p35', '10'])
+        mass_points.append(['3p35', '1'])
+        mass_points.append(['4p0', '0p0'])
+        mass_points.append(['4p0', '0p1'])
+        mass_points.append(['4p0', '100'])
+        mass_points.append(['4p0', '10'])
+        mass_points.append(['4p0', '1'])
+        mass_points.append(['5p0', '0p0'])
+        mass_points.append(['5p0', '0p1'])
+        mass_points.append(['5p0', '100'])
+        mass_points.append(['5p0', '10'])
+        mass_points.append(['5p0', '1'])
+        for [m,t] in mass_points:
             config_list.append(config)
             config_list[-1].JobType.pyCfgParams=["era={}".format(era),"data=False",]
-            config_list[-1].Data.inputDataset = dataset_name
-            config_list[-1].General.requestName = 'centralSkim_{}_{}_{}'.format(signal_name, era, ntuple_version)
-            print(config_list[-1])
-            crabCommand('submit', config = config_list[-1], dryrun = False) ## dryrun = True for local test
+            if era=="2022":
+                dataset_name = '/BToPhi_MPhi-{}_ctau-{}mm_TuneCP5_13p6TeV_pythia8/Run3Summer22DRPremix-124X_mcRun3_2022_realistic_v12-v2/AODSIM'.format(m, t)
+                config_list[-1].Data.inputDataset = dataset_name
+            elif era=="2022postEE":
+                dataset_name = '/BToPhi_MPhi-{}_ctau-{}mm_TuneCP5_13p6TeV_pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM'.format(m, t)
+                config_list[-1].Data.inputDataset = dataset_name
+            # No 2023 eras for the moment, when adding them, you have to run . install_cmssw.sh 2023central first
+            config_list[-1].General.requestName = 'centralSkim__{}_{}_m-{}_ctau-{}mm_{}'.format(signal, era, m, t, ntuple_version)
             #print(config)
-            #crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
+            crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
     #elif "[signal]" in sys.argv[2]: (<--- Add additional signals here)
     else:
         quit()

@@ -300,6 +300,22 @@ if not isData and args.weightMC:
                 if sampleTag in row[0]:
                     efilter = float(row[-1])
                     break
+    if 'BToPhi' in sampleTag:
+        for _,f in enumerate(files):
+            if not args.condor:
+                f_ = ROOT.TFile.Open(f.replace('davs://redirector.t2.ucsd.edu:1095//', '/ceph/cms/'))
+            else:
+                f_ = ROOT.TFile.Open(f)
+            h_ = f_.Get("counts").Clone("Clone_{}".format(_))
+            counts.Add(h_)
+            f_.Close()
+        ncounts = counts.GetBinContent(1)
+        with open('data/BToPhi-request.csv') as mcinfo:
+            reader = csv.reader(mcinfo, delimiter=',')
+            for row in reader:
+                if sampleTag in row[0]:
+                    efilter = float(row[-1])
+                    break
     if "ScenB2" in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
@@ -453,7 +469,7 @@ for e in range(firste,laste):
     if not isData:
         nGEN = len(t.GenPart_pdgId)
         for i in range(nGEN):
-            if abs(t.GenPart_pdgId[i]) != 13:
+            if abs(t.GenPart_pdgId[i]) != 13:            
                 continue
             isResonance = False
             for j in range(i+1, nGEN):
@@ -469,12 +485,13 @@ for e in range(firste,laste):
                         gvec = ROOT.TLorentzVector()
                         gvec.SetPtEtaPhiM(t.GenPart_pt[k], t.GenPart_eta[k], t.GenPart_phi[k], t.GenPart_m[k])
                         dmumot.append(gvec)
-                        break
+                        break 
+            '''
             if isResonance:
                 for h in h1d["genmu"]:
                     tn = h.GetName()
                     h.Fill(eval(variable1d[h.GetName()]), lumiweight)
-
+            '''
         for g,gp in enumerate(dmumot):
             lxygen = t.GenPart_lxy[dmugen[2*g]] 
             if t.GenPart_motherPdgId[dmugen[2*g]]==443:

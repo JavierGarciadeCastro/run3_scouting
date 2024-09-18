@@ -8,3 +8,4 @@ Signal_HTo2ZdTo2mu2x_MZd-7p0_ctau-100mm,197000
 Signal_ScenB1_30_9p9_4p8_ctau_1mm,276000
 Signal_ScenB1_30_9p9_4p8_ctau_10mm,293000
 Signal_ScenB1_30_9p9_4p8_ctau_100mm,292000
+Signal_BToPhi-3p35_ctau-10mm_2022, 292000
