@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Working point analysis for the scouting BDT.
+"""BDT training and working point analysis for the scouting BDT.
 
-Trains the global BDT, finds the BDT score threshold at a configurable
-background rejection target, then plots input variable distributions for
-events passing the working point cut (signal vs background).
+Trains the global BDT, finds the BDT score threshold configurable
+background rejection targets, and outputs ROCs, discriminants and
+significance plots.
 
 Usage (e.g):
-    python3 BDT/workingpoint.py --bkg minbias --tuples-dir tuples_L1_info --require-l1
+    python3 BDT/workingpoint.py --fpr-scan 1e-2 1e-5 10 --out-name significance_10FPRs_nonCond
 """
 
 import argparse
-import gc
 import glob
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 import uproot
 import xgboost
 import matplotlib
@@ -25,7 +25,6 @@ import numpy as np
 import pandas as pd
 import os
 from pathlib import Path
-
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_curve, roc_auc_score
 from scipy.stats import norm
@@ -33,294 +32,148 @@ from xgboost import XGBClassifier
 
 hep.style.use("CMS")
 plt.rcParams.update({
-    "font.size":             13,
-    "axes.labelsize":        13,
-    "axes.titlesize":        13,
-    "xtick.labelsize":       11,
-    "ytick.labelsize":       11,
-    "legend.fontsize":       9,
-    "legend.title_fontsize": 10,
-    "axes.linewidth":        1.0,
-    "xtick.major.size":      5,
-    "ytick.major.size":      5,
-    "xtick.minor.size":      3,
-    "ytick.minor.size":      3,
-    "xtick.major.width":     0.9,
-    "ytick.major.width":     0.9,
-})
+    "font.size": 13, "axes.labelsize": 13, "axes.titlesize":  13,
+    "xtick.labelsize": 11, "ytick.labelsize": 11, "legend.fontsize": 9,
+    "legend.title_fontsize": 10, "axes.linewidth": 1.0, "xtick.major.size": 5,
+    "ytick.major.size": 5, "xtick.minor.size": 3, "ytick.minor.size": 3,
+    "xtick.major.width": 0.9, "ytick.major.width": 0.9,})
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 _parser = argparse.ArgumentParser(description="Working point analysis for the scouting BDT.")
-_parser.add_argument("--model-tag", default="A", help="Signal scenario tag for output naming.")
+_parser.add_argument("--scenario", choices=["A", "B1", "B2", "C"], default="A",
+                     help="DQCD signal scenario to train and evaluate on. Output goes to "
+                          "significance_plots[_L1req]/Scenario<S>/.")
+_parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau]",
+                     help="Signal point(s) to exclude from training and evaluate on the test set "
+                          "only, e.g. --holdout 4:1.33 (all ctau) or --holdout 4:1.33:10.")
 _parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
-                     help="Train a parametric (conditional) BDT with the signal mass point "
-                          "(param_ctau, param_mA, param_mpi) as extra inputs. Background is "
-                          "replicated once per signal point, as in BDT_training.py.")
-_parser.add_argument("--table", action=argparse.BooleanOptionalAction, default=True,
-                     help="Build the Asimov significance table: for a set of target FPRs, "
-                          "find the BDT threshold at which the xsec-weighted SV-selected QCD "
-                          "has that FPR, then tabulate p0 = 1 - Phi(Z) (with Z) per signal w"
-                          "point. Writes .tex per (mpi, mA). "
-                          "Default: on; pass --no-table to skip.")
-_parser.add_argument("--fpr-targets", type=float, nargs="+", default=[1e-4],
-                     help="Target false-positive rate(s), i.e. background-efficiency working "
-                          "point(s). One BDT-score threshold is computed per target (rows of "
-                          "the --table output; one significance line per target). Accepts a "
-                          "space-separated list, e.g. --fpr-targets 1e-4 1e-3 1e-2 1e-1. "
-                          "Default: 1e-4 (the highest-significance operating point).")
-_parser.add_argument("--mass-window-gev", type=float, default=1.0,
-                     help="ABSOLUTE SV1 dimuon mass window half-width in GeV. Used only when "
-                          "--mass-window-rel is 0. Signal and background yields are counted "
-                          "within [mA - W, mA + W] around the nominal signal mass mA. "
-                          "Set both this and --mass-window-rel to 0 to disable (full mass range).")
+                     help="Train a parametric (conditional) BDT: one signal parameter (chosen "
+                          "with --cond-var) is added as an input feature.")
+_parser.add_argument("--cond-var", choices=["ctau", "mratio"], default="mratio",
+                     help="Which signal parameter the conditional BDT is parametrised in "
+                          "(only used with --conditional). 'ctau': the lifetime [mm] "
+                          "(param_ctau). 'mratio': the mass ratio mA/mpi snapped to the "
+                          "nearest value of --mratio-grid (param_mratio). Output goes to "
+                          "<out-name>_condCtau or <out-name>_condMratio. Default: mratio.")
+_parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
+                     help="Nominal mA/mpi values the signal points are snapped onto --cond-var mratio")
+_parser.add_argument("--train-max-events", type=int, default=15_000_000, metavar="N",
+                     help="Cap the number of TRAINING events fed to XGBoost")
+_parser.add_argument("--significance", action=argparse.BooleanOptionalAction, default=True,
+                     help="Run the significance evaluation after training")
+_parser.add_argument("--fpr-targets", type=float, nargs="+", default=None,
+                     help="Target false-positive rate(s). Default: 1e-1 1e-2 1e-3 1e-4 "
+                          "(unless --fpr-scan is given; both may be combined).")
+_parser.add_argument("--fpr-scan", type=float, nargs=3, default=None, metavar=("LO", "HI", "N"),
+                     help="Add N log-spaced FPR targets between LO and HI (inclusive)"
+                     "Merged with any explicit --fpr-targets.")
 _parser.add_argument("--mass-window-rel", type=float, default=0.1,
-                     help="RELATIVE (mass-dependent) SV1 dimuon mass window half-width, as a "
-                          "fraction of mA: the window is [mA*(1-r), mA*(1+r)]. Takes precedence "
-                          "over --mass-window-gev when > 0 (default r = 0.1 = +/-10%% of mA). "
-                          "Set to 0 to fall back to the absolute --mass-window-gev window.")
-_parser.add_argument("--bkg", choices=["minbias", "qcd", "both"], default="minbias",
-                     help="Which background(s) to run. One shared BDT is trained on the "
-                          "selected background(s). Output files are suffixed _minBias, _QCD, "
-                          "or _both. In 'both' mode the significance-vs-ctau and shape plots "
-                          "overlay MinBias and QCD as separate lines (ROC/discriminant remain "
-                          "single-line, from the shared BDT).")
-_parser.add_argument("--tuples-dir", default="tuples_parking_nochi2",
-                     help="Name of the tuple directory under the repo root. Use "
-                          "'tuples_L1_info' for the re-filled (unskimmed, collection-OR) tuples "
-                          "that carry the 'passL1' branch; pair it with --require-l1.")
+                     help="SV1 dimuon mass window half-width as a fraction r of the nominal "
+                          "signal mass mA: signal and background yields entering the "
+                          "significance are counted within [mA*(1-r), mA*(1+r)]. "
+                          "Default r = 0.1 (+/-10%% of mA). Set to 0 to disable (full mass range).")
+_parser.add_argument("--sig-dir", default="tuples_priv_merged",
+                     help="Subdirectory holding the SIGNAL tuples. ")
+_parser.add_argument("--out-name", default="significance_plots_priv",
+                     help="Base output directory name under BDT/")
 _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
-                     help="Keep only events with passL1 != 0 (the L1-seed decision), applied to "
-                          "BOTH signal and background right after loading -- i.e. fold the L1 "
-                          "trigger efficiency into every yield/efficiency. Requires tuples with a "
-                          "'passL1' branch (see --tuples-dir tuples_L1_info). Outputs go to a "
-                          "separate 'significance_plots_L1req/' tree so they don't clobber the "
-                          "no-L1 results.")
+                     help="Keep only events with passL1 != 0 (the L1-seed decision)")
 _args = _parser.parse_args()
 
-use_conditional      = _args.conditional
-model_tag            = _args.model_tag
-MASS_WINDOW_GEV      = _args.mass_window_gev  # absolute SV1 mass window half-width [GeV] around mA
-MASS_WINDOW_REL      = _args.mass_window_rel  # relative half-width (fraction of mA); takes precedence
-MASS_WINDOW_ACTIVE   = bool((MASS_WINDOW_REL and MASS_WINDOW_REL > 0.0) or
-                            (MASS_WINDOW_GEV and MASS_WINDOW_GEV > 0.0))
-REQUIRE_L1           = _args.require_l1        # keep only passL1 != 0 events (sig + bkg)
-TUPLES_SUBDIR        = _args.tuples_dir        # tuple directory name under the repo root
+#Explicit --fpr-targets, plus the --fpr-scan log grid
+def _resolve_fpr_targets():
+    t = set(_args.fpr_targets or [])
+    if _args.fpr_scan is not None:
+        lo, hi, n = _args.fpr_scan
+        t |= {float(f"{v:.3g}") for v in np.logspace(np.log10(lo), np.log10(hi), int(n))}
+    if not t:
+        t = {1e-1, 1e-2, 1e-3, 1e-4}
+    return sorted(t, reverse=True)
 
-def _mass_window_halfwidth(mA):
-    """SV1 dimuon mass window half-width around mA [GeV].
-    Relative (mass-dependent) window takes precedence; else absolute; else None."""
-    if MASS_WINDOW_REL and MASS_WINDOW_REL > 0.0:
-        return MASS_WINDOW_REL * mA
-    if MASS_WINDOW_GEV and MASS_WINDOW_GEV > 0.0:
-        return MASS_WINDOW_GEV
-    return None
-
-def _win_label_str():
-    """LaTeX label describing the active mass window, or '' if disabled."""
-    if MASS_WINDOW_REL and MASS_WINDOW_REL > 0.0:
-        return rf'$|m_{{\mu\mu}}-m_A|<{MASS_WINDOW_REL:g}\,m_A$'
-    if MASS_WINDOW_GEV and MASS_WINDOW_GEV > 0.0:
-        return rf'$|m_{{\mu\mu}}-m_A|<{MASS_WINDOW_GEV:g}$ GeV'
-    return ''
-
-LUMI_FB = 109.95 # 2024 Luminosity [fb^-1]
-SIG_XSEC_PB = 0.439
-
-
-SIG_NGEN = {
-    (10.0, 1.0,  0.1):   997140,
-    (10.0, 1.0,  1.0):   999293,
-    (10.0, 1.0,  10.0):  980749,
-    (10.0, 1.0,  100.0): 954880,
-    (4.0,  1.33, 0.1):   987256,
-    (4.0,  1.33, 1.0):   932645,
-    (4.0,  1.33, 10.0):  978670,
-    (4.0,  1.33, 100.0): 951079,
-    (4.0,  0.40, 0.1):   903440,
-    (4.0,  0.40, 1.0):   998576,
-    (4.0,  0.40, 10.0):  952631,
-    (4.0,  0.40, 100.0): 997861,
-    (1.0,  0.33, 0.1):   916220,
-    (1.0,  0.33, 1.0):   955918,
-    (1.0,  0.33, 10.0):  934864,
-    (1.0,  0.33, 100.0): 998564,
-}
-
-
-BR_A_MUMU = {
-    (1.0,  0.33): 0.464,   # 0.458/0.988
-    (4.0,  0.40): 0.440,   # 0.436/0.992
-    (2.0,  0.67): 0.193,   # not in current tuples
-    (10.0, 1.00): 0.307,   # 0.293/0.95343
-    (4.0,  1.33): 0.317,   # 0.305/0.9623
-}
-
-# Trigger label shown in the significance-plot header.
-TRIGGER_LABEL = "Scouting Asymptotic Significance"
-
-MINBIAS_FILES = [
-    "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root",
-]
-
-QCD_FILES = [
-    "tuples_QCD_Bin-PT-15to20_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-20to30_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-30to50_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-50to80_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-80to120_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-120to170_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-170to300_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-300to470_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-470to600_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-600to800_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-800to1000_Fil-MuEnriched_2024_2024.root",
-    "tuples_QCD_Bin-PT-1000_Fil-MuEnriched_2024_2024.root",
-]
-
-# Background cross sections [pb] (https://cmsweb.cern.ch/das/request?view=list&limit=50&instance=prod%2Fglobal&input=%2FQCD_*MuEnriched*%2F*Summer24MiniAODv6*%2FMINIAODSIM)
-BKG_XSEC = {
-    "tuples_QCD_Bin-PT-15to20_Fil-MuEnriched_2024_2024.root":    3018000.0,
-    "tuples_QCD_Bin-PT-20to30_Fil-MuEnriched_2024_2024.root":    2701000.0,
-    "tuples_QCD_Bin-PT-30to50_Fil-MuEnriched_2024_2024.root":    1461000.0,
-    "tuples_QCD_Bin-PT-50to80_Fil-MuEnriched_2024_2024.root":    407600.0,
-    "tuples_QCD_Bin-PT-80to120_Fil-MuEnriched_2024_2024.root":   96070.0,
-    "tuples_QCD_Bin-PT-120to170_Fil-MuEnriched_2024_2024.root":  23140.0,
-    "tuples_QCD_Bin-PT-170to300_Fil-MuEnriched_2024_2024.root":  7754.0,
-    "tuples_QCD_Bin-PT-300to470_Fil-MuEnriched_2024_2024.root":  699.6,
-    "tuples_QCD_Bin-PT-470to600_Fil-MuEnriched_2024_2024.root":  67.67,
-    "tuples_QCD_Bin-PT-600to800_Fil-MuEnriched_2024_2024.root":  21.27,
-    "tuples_QCD_Bin-PT-800to1000_Fil-MuEnriched_2024_2024.root": 3.89,
-    "tuples_QCD_Bin-PT-1000_Fil-MuEnriched_2024_2024.root":      1.323,
-
-    "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root":            1.051e7 * (409318867 / 8.31e9),  # ~= 5.18e5 pb
-}
-
-# Number of generated events per background sample (from DAS nevents)
-BKG_NGEN = {
-    "tuples_QCD_Bin-PT-15to20_Fil-MuEnriched_2024_2024.root":    125036760,
-    #"tuples_QCD_Bin-PT-20to30_Fil-MuEnriched_2024_2024.root":    93304586, #ZOMBIE (for now)
-    "tuples_QCD_Bin-PT-30to50_Fil-MuEnriched_2024_2024.root":    95305920,
-    "tuples_QCD_Bin-PT-50to80_Fil-MuEnriched_2024_2024.root":    107449521,
-    "tuples_QCD_Bin-PT-80to120_Fil-MuEnriched_2024_2024.root":   94128199,
-    "tuples_QCD_Bin-PT-120to170_Fil-MuEnriched_2024_2024.root":  99824346,
-    "tuples_QCD_Bin-PT-170to300_Fil-MuEnriched_2024_2024.root":  94338762,
-    "tuples_QCD_Bin-PT-300to470_Fil-MuEnriched_2024_2024.root":  79815908,
-    "tuples_QCD_Bin-PT-470to600_Fil-MuEnriched_2024_2024.root":  71786916,
-    "tuples_QCD_Bin-PT-600to800_Fil-MuEnriched_2024_2024.root":  85842835,
-    "tuples_QCD_Bin-PT-800to1000_Fil-MuEnriched_2024_2024.root": 81930100,
-    "tuples_QCD_Bin-PT-1000_Fil-MuEnriched_2024_2024.root":      87293168,
-    "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root":            409318867,
-}
-
-
-_MINBIAS_LOOPER_COV  = 114448466 / 409318867 # ~= 0.2796
-BKG_FRACTION = {"tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root":_MINBIAS_LOOPER_COV}
-
-def _bkg_fraction(fname):
-    return BKG_FRACTION.get(fname, 1.0)
-
-def _eff_ngen(fname):
-    """Effective generated-event denominator for the loaded subsample: frac * N_gen.
-    Using this everywhere N_gen enters the yield keeps subsampling unbiased."""
-    return _bkg_fraction(fname) * BKG_NGEN[fname]
-
-PB_TO_FB = 1.0e3   # 1 pb = 1000 fb (for the QCD background cross sections)
-
-_HERE      = Path(__file__).resolve().parent
-tuples_dir = _HERE.parent / TUPLES_SUBDIR
-
-# Filename suffix tagging the background set used (appended to every plot/table).
-OUT_TAG = "_minBias"
-
-# ---------------------------------------------------------------------------
-# Per-lxy-bin cut-and-count
-# ---------------------------------------------------------------------------
-CNC_LXY_DIRS = {
-    (10.0, 1.00): "mpi10_mA1p00",
-    (4.0,  1.33): "mpi4_mA1p33",
-}
-
-def _parse_cnc_lxy_table(path):
-    """Parse one cutncount table into {lxy_label -> (sig_eff, bkg_rej)} for the
-    per-lxy-bin rows (cutncount label style, e.g. '0p0-0p2'). Rows look like:
-    '   0p0-0p2 |   6993/18961        0.369 | 973828/5061994      0.808'."""
-    out = {}
-    for line in Path(path).read_text().splitlines():
-        if line.count("|") != 2:
-            continue
-        left, mid, right = line.split("|")
-        # Per-lxy (and 'full range') rows carry 'pass/total' fractions; skip the
-        # cutflow/header rows, which never do.
-        if "/" not in mid or "/" not in right:
-            continue
-        try:
-            eff = float(mid.split()[-1])
-            rej = float(right.split()[-1])
-        except (ValueError, IndexError):
-            continue
-        out[left.strip()] = (eff, rej)
+# Convert the holdout strings into numbers
+def _parse_holdout(specs):
+    out = []
+    for s in specs:
+        parts = [float(p) for p in s.split(":")]
+        mpi, mA = parts[0], parts[1]
+        ctau = parts[2] if len(parts) == 3 else None
+        out.append((mpi, mA, ctau))
     return out
 
-_CNC_DIR       = _HERE / "cnc_tables"
-_CNC_SUBDIR_RE = re.compile(r"^mpi(\w+)_mA(\w+)$")
+# Set all the necessary configurations
+SCENARIO             = _args.scenario
+use_conditional      = _args.conditional
+COND_VAR             = _args.cond_var
+COND_COL             = {"ctau": "param_ctau", "mratio": "param_mratio"}[COND_VAR]
+COND_TAG             = ({"ctau": "_condCtau", "mratio": "_condMratio"}[COND_VAR] if use_conditional else "")
+MRATIO_GRID          = np.array(sorted(set(_args.mratio_grid)), dtype=np.float64)
+TRAIN_MAX_EVENTS     = max(0, _args.train_max_events)   # 0 = no cap on training-set size
+FPR_TARGETS          = _resolve_fpr_targets()
+HOLDOUT              = _parse_holdout(_args.holdout)
+HOLD_TAG             = ("_holdout-" + "-".join(s.replace(":", "-").replace(".", "p") for s in _args.holdout) if _args.holdout else "")
+MASS_WINDOW_REL      = _args.mass_window_rel  # SV1 mass window half-width as a fraction of mA
+MASS_WINDOW_ACTIVE   = MASS_WINDOW_REL > 0.0   # 0 = no window (full mass range)
+REQUIRE_L1           = _args.require_l1        # keep only passL1 != 0 events (sig + bkg)
+SIG_SUBDIR           = _args.sig_dir
+MINBIAS_SUBDIR       = "tuples_minbias_full"
+TUPLES_SUBDIR        = SIG_SUBDIR
+LUMI_FB = 109.95 # 2024 Luminosity [fb^-1]
+PB_TO_FB = 1.0e3
+_HERE      = Path(__file__).resolve().parent
+TUPLES_BASE    = Path("/ceph/cms/store/group/Run3Scouting")
+tuples_dir     = TUPLES_BASE / SIG_SUBDIR
+minbias_dir    = TUPLES_BASE / MINBIAS_SUBDIR
+MINBIAS_FILE = "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root"
+MINBIAS_NGEN_BEFOREFILTER = 8.31e9
+MINBIAS_NGEN_AFTERFILTER = 409318867
+MINBIAS_XSEC_BEFOREFILTER = 1.051e7
+MINBIAS_XSEC = MINBIAS_XSEC_BEFOREFILTER * (MINBIAS_NGEN_AFTERFILTER / MINBIAS_NGEN_BEFOREFILTER)  # ~= 5.18e5 pb
+OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"Scenario{SCENARIO}{HOLD_TAG}")
+PLOT_LABEL = "Scouting Asymptotic Significance"
+print(f"FPR targets ({len(FPR_TARGETS)}): "  + ", ".join(f"{f:g}" for f in FPR_TARGETS))
 
-def _cnc_bkg_for_tag(tag):
-    """Map a plot tag (OUT_TAG / SUB_BKGS) to the cutncount --bkg filename token."""
-    return {"_minBias": "minbias", "_QCD": "qcd"}.get(tag)
+def _mass_window_halfwidth(mA):
+    return MASS_WINDOW_REL * mA if MASS_WINDOW_ACTIVE else None
+def _win_label_str():
+    return rf'$|m_{{\mu\mu}}-m_A|<{MASS_WINDOW_REL:g}\,m_A$' if MASS_WINDOW_ACTIVE else ''
 
-def _iter_cnc_tables(bkg):
-    """Yield (mpi, mA, ctau, path) for every cnc_tables/mpi*_mA*/cnc_ctau-*mm_<bkg>*.txt.
-    Matches window-tagged names too (cnc_ctau-1p0mm_qcd_mwinRel0p1.txt); if both a
-    windowed and a full-mass table exist for a point, the last in sorted order wins."""
-    if not bkg:
-        return
-    for sub in sorted(_CNC_DIR.glob("mpi*_mA*")):
-        m = _CNC_SUBDIR_RE.match(sub.name)
-        if not m:
-            continue
-        mpi_v = float(m.group(1).replace("p", "."))
-        mA_v  = float(m.group(2).replace("p", "."))
-        for fp in sorted(sub.glob(f"cnc_ctau-*mm_{bkg}*.txt")):
-            name   = fp.name
-            ctau_v = float(name[len("cnc_ctau-"):name.index("mm_")].replace("p", "."))
-            yield mpi_v, mA_v, ctau_v, fp
+# Identify the mass ratio for each mass point
+def _mratio(mpi, mA):
+    return float(MRATIO_GRID[np.argmin(np.abs(MRATIO_GRID - mA / mpi))])
 
-def _load_cnc_fullrange_points(bkg):
-    """{(mpi, mA, ctau): (sig_eff, bkg_rej)} from the 'full range' row of each table."""
-    pts = {}
-    for mpi_v, mA_v, ctau_v, fp in _iter_cnc_tables(bkg):
-        rows = _parse_cnc_lxy_table(fp)
-        if "full range" in rows:
-            pts[(mpi_v, mA_v, ctau_v)] = rows["full range"]
-    return pts
+# Which parametrs to use for the pBDT (only when conditional is True)
+def _theta_of(key):
+    return key[2] if COND_VAR == "ctau" else _mratio(key[0], key[1])
 
-def _load_cnc_lxy_points(bkg):
-    """Build {(mpi, mA): {lxy_label(cutncount) -> {ctau -> (eff, rej)}}} for the
-    CNC_LXY_DIRS mass points, from the per-lxy-bin rows of the <bkg> tables."""
-    pts = {}
-    for mpi_v, mA_v, ctau_v, fp in _iter_cnc_tables(bkg):
-        if (mpi_v, mA_v) not in CNC_LXY_DIRS:
-            continue
-        for lbl, (eff, rej) in _parse_cnc_lxy_table(fp).items():
-            if lbl == "full range":
-                continue
-            pts.setdefault((mpi_v, mA_v), {}).setdefault(lbl, {})[ctau_v] = (eff, rej)
-    return pts
+# Turn FPR target into BDT score
+def _wp_from_roc(fpr_arr, thr_arr, target):
+    fpr_arr = np.asarray(fpr_arr, dtype=float)
+    thr_arr = np.asarray(thr_arr, dtype=float)
+    ok = np.flatnonzero((fpr_arr > 0.0) & (thr_arr <= 1.0))
+    if len(ok) == 0:
+        return None
+    j = ok[int(np.argmin(np.abs(fpr_arr[ok] - target)))]
+    return float(thr_arr[j]), float(fpr_arr[j])
 
-# Full-range C&C operating points, auto-loaded per background tag
-CNC_POINTS = {
-    "_minBias": _load_cnc_fullrange_points("minbias"),
-    "_QCD":     _load_cnc_fullrange_points("qcd"),
-}
-
-FIGSIZE     = (8.5, 6.5)
-MASS_COLORS = ["#d62728", "#ff7f0e", "#2ca02c", "#1f77b4", "#e377c2"]
-BKG_FACE    = "#7fc7c4"
-BKG_EDGE    = "#2f5f5d"
-
-_SIG_RE = re.compile(r"tuples_Signal_ScenarioA_Par_2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
+# Build boolean for the held out signal points (in case you want
+# to test on a signal point that hasn't been used for training)
+def _holdout_mask(df):
+    m = np.zeros(len(df), dtype=bool)
+    if not HOLDOUT:
+        return m
+    is_sig = (df['label'].values == 1)
+    mpi_a, mA_a, ctau_a = (df['param_mpi'].values, df['param_mA'].values, df['param_ctau'].values)
+    for mpi, mA, ctau in HOLDOUT:
+        sel = is_sig & np.isclose(mpi_a, mpi) & np.isclose(mA_a, mA)
+        if ctau is not None:
+            sel = sel & np.isclose(ctau_a, ctau)
+        if not sel.any():
+            print(f"Holding out {mpi:g}:{mA:g}"
+                  f"{'' if ctau is None else f':{ctau:g}'} matched no signal events.")
+        m |= sel
+    return m
 
 def _p2f(s):
     return float(s.replace("p", "."))
@@ -328,19 +181,43 @@ def _p2f(s):
 def _flabel(f):
     return f"{f:g}".replace(".", "p")
 
-sig_file_params = []
-for fpath in sorted(glob.glob(str(tuples_dir / "tuples_Signal_ScenarioA_Par_2024_*.root"))):
-    m = _SIG_RE.search(os.path.basename(fpath))
-    if m:
-        mpi_s, mA_s, ctau_s = m.groups()
-        sig_file_params.append((fpath, _p2f(mpi_s), _p2f(mA_s), _p2f(ctau_s)))
+_SIG_GLOB = f"tuples_Signal_Scenario{SCENARIO}_*_2024_*.root"
+_SIG_RE = re.compile(rf"tuples_Signal_Scenario{SCENARIO}_(?:Par|Priv)_2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
 
+# Build signal file inventory (1 file per signal point)
+_sig_by_point = {}
+for fpath in sorted(glob.glob(str(tuples_dir / _SIG_GLOB))):
+    m = _SIG_RE.search(os.path.basename(fpath))
+    if not m:
+        continue
+    mpi_s, mA_s, ctau_s = m.groups()
+    key = (_p2f(mpi_s), _p2f(mA_s), _p2f(ctau_s))
+    is_merged = bool(re.search(r"_2024\.root$", os.path.basename(fpath)))
+    prev = _sig_by_point.get(key)
+    if prev is None or (is_merged and not prev[1]):
+        _sig_by_point[key] = (fpath, is_merged)
+
+sig_file_params = [(f, k[0], k[1], k[2]) for k, (f, _m) in sorted(_sig_by_point.items())]
 param_grid = [(p[3], p[2], p[1]) for p in sig_file_params]  # (ctau, mA, mpi)
 
+# Load number of generated events per signal point
+with open(_HERE / "sig_ngen_cache.json") as fh:
+    _ngen_by_file = json.load(fh)
 
-# ---------------------------------------------------------------------------
-# BDT variables — mirrors BDT_training.py
-# ---------------------------------------------------------------------------
+# Build dict for each signal point 
+SIG_NGEN = {}
+for fpath, mpi_val, mA_val, ctau_val in sig_file_params:
+    n = _ngen_by_file.get(os.path.basename(fpath))
+    if n is None:
+        print(f"no N_gen for {os.path.basename(fpath)} -- EXCLUDED from the yield table")
+        continue
+    SIG_NGEN[(mpi_val, mA_val, ctau_val)] = n
+
+
+
+# ----------------------------------------
+# BDT variables
+# ----------------------------------------
 def _make_bdt_vars():
     sv_stems = [
         "chi2Ndof", "d3d_mumu_SV", "dphi_mumu_SV", "l3d", "lxy",
@@ -368,41 +245,48 @@ def _make_bdt_vars():
 BDT_VARIABLES = _make_bdt_vars()
 _LOAD_BRANCHES = list(dict.fromkeys(BDT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1"]))
 
-# ---------------------------------------------------------------------------
 # Data loading helpers
-# ---------------------------------------------------------------------------
-def read_flat(path):
+_READ_THREADS  = max(1, int(os.environ.get("WP_READ_THREADS", "4")))
+_READ_EXECUTOR = (ThreadPoolExecutor(max_workers=_READ_THREADS) if _READ_THREADS > 1 else None)
+
+# Load the branches (with the least peak memory possible)
+def read_flat(path, step=2_000_000):
     with uproot.open(path) as f:
         t = f['tuples']
         available = set(t.keys())
         branches  = [b for b in _LOAD_BRANCHES if b in available]
-        df = t.arrays(branches, library='pd')
-    return df.astype('float32')
+        n = t.num_entries
+        out = np.empty((n, len(branches)), dtype=np.float32)
+        i = 0
+        for chunk in t.iterate(branches, library='np', step_size=step, decompression_executor=_READ_EXECUTOR):
+            m = len(chunk[branches[0]])
+            for j, b in enumerate(branches):
+                out[i:i + m, j] = chunk[b]
+            i += m
+        df = pd.DataFrame(out, columns=branches, copy=False)
+    return df
 
+# (Optional: Require the events to pass L1 triggers)
 def apply_l1(df, src):
-    """If --require-l1, keep only events with passL1 != 0 (L1-seed decision), folding the
-    L1 trigger efficiency into the sample. Errors out if the branch is missing (wrong dir)."""
     if not REQUIRE_L1:
         return df
-    if 'passL1' not in df.columns:
-        raise SystemExit(f"--require-l1 set but '{src}' has no passL1 branch "
-                         f"(use --tuples-dir tuples_L1_info).")
     return df[df['passL1'] > 0.5].reset_index(drop=True)
 
+#Build per-event weight
 def compute_sample_weights(df):
     y = df['label'].values
     w = np.ones(len(df), dtype=float)
     bkg_mask = (y == 0)
     w[bkg_mask] = df.loc[bkg_mask, 'xsec_weight'].values
 
-    # Class balancing
+    #Class balance
     n_sig   = int((y == 1).sum())
     sum_bkg = float(w[bkg_mask].sum())
     if n_sig > 0 and sum_bkg > 0:
         w[y == 1] = sum_bkg / n_sig
     return w
 
-
+#Add lifetime-weighted lxy (not done at tuple level)
 def add_dxy_lxy(df):
     for sv in ("SV1", "SV2"):
         denom = df[f"{sv}_lxy"] * df[f"{sv}_mass"] / df[f"{sv}_ptmm"]
@@ -410,667 +294,610 @@ def add_dxy_lxy(df):
         for mu in ("mu1", "mu2"):
             df[f"{sv}_{mu}_dxy_lxy"] = np.abs(df[f"{sv}_{mu}_dxy"]) / denom
 
+print("Building dataframe (10-15 minutes)")
+#Load all the signal into 1 dataframe
 sig_frames = []
 for fpath, mpi_val, mA_val, ctau_val in sig_file_params:
-    if not Path(fpath).exists():
-        continue
     df = apply_l1(read_flat(fpath), Path(fpath).name)
-    df['param_ctau'] = float(ctau_val)
-    df['param_mA']   = float(mA_val)
-    df['param_mpi']  = float(mpi_val)
-    df['label']      = 1
+    df['param_ctau']   = float(ctau_val)   # conditional BDT feature (--cond-var ctau)
+    df['param_mA']     = float(mA_val)
+    df['param_mpi']    = float(mpi_val)
+    df['param_mratio'] = _mratio(float(mpi_val), float(mA_val))   # (--cond-var mratio)
+    df['label']        = 1
     sig_frames.append(df)
 df_sig = pd.concat(sig_frames, ignore_index=True)
+del sig_frames, df # Keep only concatenated copy in memory
+
+# Load background dataframe
+df_bkg = apply_l1(read_flat(minbias_dir / MINBIAS_FILE), MINBIAS_FILE)
+df_bkg['label'] = 0
+df_bkg['xsec_weight'] = MINBIAS_XSEC / MINBIAS_NGEN_AFTERFILTER
+
+add_dxy_lxy(df_sig)
+add_dxy_lxy(df_bkg)
 
 
-if _args.bkg == "minbias":
-    OUT_TAG      = "_minBias"
-    ACTIVE_FILES = list(MINBIAS_FILES)
-    SUB_BKGS     = [("_minBias", list(MINBIAS_FILES), "-",  "MinBias")]
-elif _args.bkg == "qcd":
-    OUT_TAG      = "_QCD"
-    ACTIVE_FILES = list(QCD_FILES)
-    SUB_BKGS     = [("_QCD", list(QCD_FILES), "-", "QCD")]
+# Lxy binning (cm)
+lxy_bins   = [0.0, 0.2, 1.0, 2.4, 3.1, 7.0, 11.0, 16.0, 70.0]  # Match Scouting analysis
+lxy_labels = ["0p0to0p2", "0p2to1p0", "1p0to2p4", "2p4to3p1", "3p1to7p0", "7p0to11p0", "11p0to16p0", "16p0to70p0"]
+lxy_pretty = {lbl: rf'[{lxy_bins[i]:g}, {lxy_bins[i+1]:g}]' for i, lbl in enumerate(lxy_labels)} # For plotting legends
+
+df_sig['lxy_bin'] = pd.cut(df_sig['SV1_lxy'], bins=lxy_bins, labels=lxy_labels, include_lowest=True)
+df_bkg['lxy_bin'] = pd.cut(df_bkg['SV1_lxy'], bins=lxy_bins, labels=lxy_labels, include_lowest=True)
+
+# Record any missing input variables
+available  = set(df_sig.columns) & set(df_bkg.columns)
+input_vars = [v for v in BDT_VARIABLES if v in available]
+missing    = [v for v in BDT_VARIABLES if v not in available]
+
+cond_vars = [COND_COL] if use_conditional else []
+
+# Build the output directories
+out_dir       = OUT_ROOT
+_binmodel_dir = out_dir / "models" / "binned_lxy"
+_fi_lxy_dir   = out_dir / "feature_importance_by_lxy"
+_roc_lxy_dir  = out_dir / "ROC_by_lxy"
+for _d in (out_dir, _binmodel_dir, _fi_lxy_dir, _roc_lxy_dir):
+    os.makedirs(_d, exist_ok=True)
+
+def _mp_dir(mpi_val, mA_val, lxy_label=None):
+    d = out_dir / f'mpi{_flabel(mpi_val)}' / f'mA_{_flabel(mA_val)}'
+    if lxy_label is not None:
+        d = d / f'lxy_{lxy_label}'
+    os.makedirs(d, exist_ok=True)
+    return d
+
+# ---------------------------------------------------------------------------
+# Train BDT
+# ---------------------------------------------------------------------------
+if use_conditional:
+    # Parametric BDT conditioned on one signal parameter (ctau or mA/mpi): each
+    # background event gets a value drawn uniformly from the signal grid.
+    _rng     = np.random.default_rng(42)
+    _g_theta = np.array(sorted(set(df_sig[COND_COL].to_numpy())), dtype=np.float64)
+    df_bkg[COND_COL] = _g_theta[_rng.integers(0, len(_g_theta), size=len(df_bkg))]
+
+df_global = pd.concat([df_sig, df_bkg], ignore_index=True)
+del df_sig, df_bkg
+
+y_g   = df_global['label'] # 1: signal, 0: bkg
+w_g   = compute_sample_weights(df_global) # Per-event weights
+df_global['weight'] = w_g
+_cols  = input_vars + cond_vars # BDT feature list
+_y_all = y_g.to_numpy() # Used for stratifying into y_train/y_test
+
+_all_i = np.arange(len(df_global)) # Row index
+_hold  = _holdout_mask(df_global) # (Optional, if holdout)
+
+# Train/Test split
+if _hold.any():
+    _keep_i = _all_i[~_hold]
+    _hold_i = _all_i[_hold]
+    _tr_i, _te_i = train_test_split(
+        _keep_i, test_size=0.3, random_state=42, stratify=_y_all[_keep_i])
+    _te_i = np.concatenate([_te_i, _hold_i])   # holdout signal -> test only
+    _hp = ', '.join(f"mpi={m:g} mA={a:g}" + ('' if c is None else f" ctau={c:g}mm") for m, a, c in HOLDOUT)
+
 else:
-    OUT_TAG      = "_both"
-    ACTIVE_FILES = list(MINBIAS_FILES) + list(QCD_FILES)
-    SUB_BKGS     = [("_minBias", list(MINBIAS_FILES), "-",  "MinBias"),
-                    ("_QCD",     list(QCD_FILES),     "--", "QCD")]
+    _tr_i, _te_i = train_test_split(_all_i, test_size=0.3, random_state=42, stratify=_y_all)
 
-for BKG_FILES, OUT_TAG in [(ACTIVE_FILES, OUT_TAG)]:
-    bkg_frames = []
-    for fname in BKG_FILES:
-        fpath = tuples_dir / fname
-        if not fpath.exists():
-            continue
-        if BKG_XSEC.get(fname) is None or BKG_NGEN.get(fname) is None:
-            continue
-        df = apply_l1(read_flat(fpath), fname)
-        df['label'] = 0
-        df['bkg_file'] = fname
-        df['xsec_weight'] = BKG_XSEC[fname] / _eff_ngen(fname)
-        bkg_frames.append(df)
+# Cap the TRAINING rows to bound the XGBoost fit memory
+if TRAIN_MAX_EVENTS and len(_tr_i) > TRAIN_MAX_EVENTS:
+    _n_before = len(_tr_i)
+    _tr_i = np.random.default_rng(123).choice(_tr_i, size=TRAIN_MAX_EVENTS, replace=False)
 
-    df_bkg = pd.concat(bkg_frames, ignore_index=True)
+_col_pos = [df_global.columns.get_loc(c) for c in _cols] # Column positions of BDT features
+y_train, y_test = _y_all[_tr_i], _y_all[_te_i] # Labels of training and testing rows
+w_train, w_test = w_g[_tr_i],   w_g[_te_i] # Event weights
 
-    add_dxy_lxy(df_sig)
-    add_dxy_lxy(df_bkg)
+# Hyperparameters
+_bdt_kwargs = dict(
+    n_estimators=100, max_depth=3, learning_rate=0.1,
+    use_label_encoder=False, eval_metric='logloss',
+    tree_method='hist', n_jobs=4,
+)
 
-    # ---------------------------------------------------------------------------
-    # Lxy binning (cm)
-    # ---------------------------------------------------------------------------
-    lxy_bins   = [0.0, 0.2, 1.0, 2.4, 3.1, 7.0, 11.0, 16.0, 70.0]  # Match Scouting analysis
-    lxy_labels = ["0p0to0p2", "0p2to1p0", "1p0to2p4", "2p4to3p1", "3p1to7p0", "7p0to11p0", "11p0to16p0", "16p0to70p0"]
-    # Human-readable range per label for plot titles/legends, e.g. "[0, 0.2]" (cm).
-    lxy_pretty = {lbl: rf'[{lxy_bins[i]:g}, {lxy_bins[i+1]:g}]'
-                  for i, lbl in enumerate(lxy_labels)}
-    #lxy_bins   = [0.0, 1.0, 10.0, 100.0] # Match Parking analysis
-    #lxy_labels = ["0to1", "1to10", "10to100"]
-
-    df_sig['lxy_bin'] = pd.cut(df_sig['SV1_lxy'], bins=lxy_bins, labels=lxy_labels, include_lowest=True)
-    df_bkg['lxy_bin'] = pd.cut(df_bkg['SV1_lxy'], bins=lxy_bins, labels=lxy_labels, include_lowest=True)
-
-    available  = set(df_sig.columns) & set(df_bkg.columns)
-    input_vars = [v for v in BDT_VARIABLES if v in available]
-    missing    = [v for v in BDT_VARIABLES if v not in available]
-
-
-
-    cond_vars = ['param_ctau', 'param_mA', 'param_mpi'] if use_conditional else []
-    out_dir   = _HERE / ('significance_plots_L1req' if REQUIRE_L1 else 'significance_plots')
-    os.makedirs(out_dir, exist_ok=True)
-
-    # ---------------------------------------------------------------------------
-    # Train global BDT
-    # ---------------------------------------------------------------------------
-    if use_conditional:
-        # Parametric BDT: replicate the full background once per signal point
-        _combined = []
-        for ctau_val, mA_val, mpi_val in param_grid:
-            sig_pt = df_sig[
-                (df_sig['param_ctau'] == ctau_val) &
-                (df_sig['param_mA']   == mA_val)   &
-                (df_sig['param_mpi']  == mpi_val)
-            ].copy()
-            bkg_cp = df_bkg.copy()
-            bkg_cp['param_ctau'] = float(ctau_val)
-            bkg_cp['param_mA']   = float(mA_val)
-            bkg_cp['param_mpi']  = float(mpi_val)
-            _combined.append(pd.concat([sig_pt, bkg_cp], ignore_index=True))
-        df_global = pd.concat(_combined, ignore_index=True)
+# ROC curve style
+def _style_roc(ax, *fprs, logy=False, tprs=()):
+    lo = 1e-6
+    mins = [f[f > 0].min() for f in fprs if np.any(f > 0)]
+    if mins:
+        lo = max(1e-7, min(mins) * 0.5)
+    ax.set_xscale('log')
+    ax.set_xlim(lo, 1.0)
+    if logy:
+        ylo = 1e-3
+        ymins = [t[t > 0].min() for t in tprs if np.any(t > 0)]
+        if ymins:
+            ylo = max(1e-4, min(ymins) * 0.5)
+        ax.set_yscale('log')
+        ax.set_ylim(ylo, 1.02)
     else:
-        df_global = pd.concat([df_sig, df_bkg], ignore_index=True)
+        ax.set_ylim(0.0, 1.02)
+    ax.grid(True, which='major', alpha=0.30, linewidth=0.6)
+    ax.grid(True, which='minor', alpha=0.15, linewidth=0.4)
+    return lo
 
-    # df_sig/df_bkg are fully folded into df_global now; free them so their rows
-    # aren't held alongside the copies below (df_global, X_g, the split).
-    del df_sig, df_bkg
-    gc.collect()
 
-    X_g = df_global[input_vars + cond_vars]
-    y_g = df_global['label']
-    w_g = compute_sample_weights(df_global)
-    df_global['weight'] = w_g
+# Feature importance plot, top-N input variables
+feat_names = list(input_vars + cond_vars)
+def _dump_feature_importance(model, title, stub, dest_dir):
+    imps  = np.asarray(model.feature_importances_, dtype=float)
+    order = np.argsort(imps)[::-1]
+    top_n   = min(30, len(feat_names))
+    top_idx = order[:top_n][::-1]
 
-    X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(X_g, y_g, w_g, test_size=0.3, random_state=42, stratify=y_g)
+    fig, ax = plt.subplots(figsize=(7.5, max(4.0, 0.28 * top_n)), constrained_layout=True)
+    ax.barh(range(top_n), imps[top_idx], color='#1f77b4', edgecolor='#0f3b5f', linewidth=0.5)
+    ax.set_yticks(range(top_n))
+    ax.set_yticklabels([feat_names[i] for i in top_idx], fontsize=7)
+    ax.set_xlabel('Feature importance (gain)')
+    ax.set_title(f'{title} (top {top_n})')
+    ax.text(0.98, 0.02, "Preliminary", transform=ax.transAxes, fontsize=11,fontstyle="italic", fontweight="bold", va="bottom", ha="right")
+    ax.tick_params(direction="in", top=True, right=True, which="both")
+    fig.savefig(dest_dir / f'{stub}.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
-    del X_g
-    gc.collect()
+    _fi_lines = ["rank  importance  feature"]
+    for r, i in enumerate(order):
+        _fi_lines.append(f'{r:>4}  {imps[i]:>10.5f}  {feat_names[i]}')
+    (dest_dir / f'{stub}.txt').write_text('\n'.join(_fi_lines) + '\n')
+    return {feat_names[i]: float(imps[i]) for i in order}
 
-    bdt = XGBClassifier(
-        n_estimators=100, max_depth=3, learning_rate=0.1,
-        use_label_encoder=False, eval_metric='logloss',
-        tree_method='hist', n_jobs=4,
-    )
-    bdt.fit(X_train, y_train, sample_weight=w_train)
+# Prepare the arrays for the BDT binned in lxy
+_lxy_all_a = df_global['lxy_bin'].to_numpy()
+lxy_test  = _lxy_all_a[_te_i]
+y_test_a  = np.asarray(y_test)
+w_test_a  = np.asarray(w_test)
 
-    # ---------------------------------------------------------------------------
-    # Find working point
-    # ---------------------------------------------------------------------------
-    y_score = bdt.predict_proba(X_test)[:, 1]
-    fpr, tpr, thresholds = roc_curve(y_test, y_score, sample_weight=w_test)
-    auc = roc_auc_score(y_test, y_score, sample_weight=w_test)
+lxy_train = _lxy_all_a[_tr_i]
+y_train_a = np.asarray(y_train)
+w_train_a = np.asarray(w_train)
+del _lxy_all_a
 
-    # ---------------------------------------------------------------------------
-    # Persist the trained model so it can be APPLIED TO DATA later (see BDT/apply_bdt_to_data.py)
-    # ---------------------------------------------------------------------------
-    _model_dir = out_dir / "models"
-    os.makedirs(_model_dir, exist_ok=True)
-    _l1_tag     = "_L1req" if REQUIRE_L1 else ""
-    _model_stub = f"bdt_global{OUT_TAG}{_l1_tag}"
-    _model_path = _model_dir / f"{_model_stub}.json"
-    bdt.save_model(str(_model_path))
+_bin_roc_trained = {}
+_bin_models = {}
+_bin_thr    = {}
 
-    # Working-point thresholds: BDT score cut giving each target FPR on the
-    # xsec-weighted background ROC (closest grid point; same rule as the table).
-    _wp_thresholds = {}
-    for f_t in sorted(_args.fpr_targets, reverse=True):
-        _j = int(np.argmin(np.abs(fpr - f_t)))
-        _wp_thresholds[f"{f_t:g}"] = {
-            "threshold":    float(thresholds[_j]),
-            "fpr_achieved": float(fpr[_j]),
-            "tpr_achieved": float(tpr[_j]),
+################################
+######### BDT TRAINING #########
+################################
+print("Training BDTs (5 minutes)")
+for lxy_label in lxy_labels:
+    m_te = (lxy_test == lxy_label)
+    m_tr = (lxy_train == lxy_label)
+    # Check that there is enough data in the bin
+    if (m_tr.sum() < 20 or m_te.sum() < 10 or
+            len(np.unique(y_train_a[m_tr])) < 2 or
+            len(np.unique(y_test_a[m_te])) < 2):
+        print(f"Skipping bin {lxy_label} " f"(train={int(m_tr.sum())}, test={int(m_te.sum())})")
+        continue
+
+    # Train BDT
+    bdt_bin = XGBClassifier(**_bdt_kwargs)
+    bdt_bin.fit(df_global.iloc[_tr_i[m_tr], _col_pos], y_train_a[m_tr], sample_weight=w_train_a[m_tr])
+
+    y_score_bin = bdt_bin.predict_proba(df_global.iloc[_te_i[m_te], _col_pos])[:, 1]
+    fpr_t, tpr_t, thr_t = roc_curve(y_test_a[m_te], y_score_bin, sample_weight=w_test_a[m_te])
+    auc_t = roc_auc_score(y_test_a[m_te], y_score_bin, sample_weight=w_test_a[m_te])
+    _bin_roc_trained[lxy_label] = (fpr_t, tpr_t, auc_t)
+    _bin_models[lxy_label] = bdt_bin
+    _bin_thr[lxy_label] = (fpr_t, thr_t)
+
+    _bin_stub = f"bdt_lxy_{lxy_label}"
+    _bin_model_path = _binmodel_dir / f"{_bin_stub}.json"
+    bdt_bin.save_model(str(_bin_model_path))
+
+    _bin_fi = _dump_feature_importance(
+        bdt_bin,
+        rf'BDT feature importance, $l_{{xy}}$ {lxy_pretty[lxy_label]} cm',
+        f'feature_importance_lxy_{lxy_label}', _fi_lxy_dir)
+
+    # Compute score thresholds per FPR target
+    _bin_wp = {}
+    for f_t in FPR_TARGETS:
+        _wp = _wp_from_roc(fpr_t, thr_t, f_t)
+        if _wp is None:
+            continue
+        _thr_v, _fpr_v = _wp
+        _j = int(np.argmin(np.abs(fpr_t - _fpr_v)))
+        _bin_wp[f"{f_t:g}"] = {
+            "threshold":    _thr_v,
+            "fpr_achieved": _fpr_v,
+            "tpr_achieved": float(tpr_t[_j]),
         }
-
-    _manifest = {
-        "model_file":      _model_path.name,
-        "features":        list(input_vars + cond_vars),  # EXACT training column order
+    # Save the BDT model
+    _bin_idx = lxy_labels.index(lxy_label)
+    _bin_manifest = {
+        "model_file":      _bin_model_path.name,
+        "features":        list(input_vars + cond_vars),
         "conditional":     bool(use_conditional),
+        "cond_var":        (COND_VAR if use_conditional else None),
         "cond_vars":       list(cond_vars),
-        "bkg":             OUT_TAG.lstrip("_"),
         "require_l1":      bool(REQUIRE_L1),
         "tuples_subdir":   TUPLES_SUBDIR,
-        "auc":             float(auc),
+        "lxy_bin":         lxy_label,
+        "lxy_range_cm":    [lxy_bins[_bin_idx], lxy_bins[_bin_idx + 1]],
+        "signal_mA":       sorted({float(p[2]) for p in sig_file_params}),
+        "signal_ctau_mm":  sorted({float(p[3]) for p in sig_file_params}),
+        "signal_mratio":   sorted({_mratio(float(p[1]), float(p[2])) for p in sig_file_params}),
+        "scenario":        SCENARIO,
+        "auc":             float(auc_t),
         "mass_window_rel": float(MASS_WINDOW_REL),
-        "mass_window_gev": float(MASS_WINDOW_GEV),
-        "wp_thresholds":   _wp_thresholds,
+        "wp_thresholds":   _bin_wp,
+        "feature_importance": _bin_fi,
         "xgboost_version": xgboost.__version__,
     }
-    _manifest_path = _model_dir / f"{_model_stub}_manifest.json"
-    with open(_manifest_path, "w") as _mf:
-        json.dump(_manifest, _mf, indent=2)
-    print(f"[workingpoint] saved BDT model    -> {_model_path}")
-    print(f"[workingpoint] saved BDT manifest -> {_manifest_path}")
+    with open(_binmodel_dir / f"{_bin_stub}_manifest.json", "w") as _mf:
+        json.dump(_bin_manifest, _mf, indent=2)
+    print(f"Training {lxy_label}")
 
-    # Single output directory holding the FPR-scanned significance tables/plots.
-    if True:
-        out_dir = _HERE / ('significance_plots_L1req' if REQUIRE_L1 else 'significance_plots')
-        os.makedirs(out_dir, exist_ok=True)
+if not _bin_models:
+    raise SystemExit("[workingpoint] no lxy bin had enough events to train a BDT -- nothing to analyse.")
+_untrained = [l for l in lxy_labels if l not in _bin_models]
+if _untrained:
+    print(f"No BDT for lxy bin(s) {', '.join(_untrained)} -- their events are EXCLUDED from every score, table and yield.")
 
-        def _mp_dir(mpi_val, mA_val, lxy_label=None):
-            """Per-mass-point output directory out_dir/mpi<X>/mA_<Y>[/lxy_<label>]
-            (created). When lxy_label is given, the per-lxy outputs go into an
-            lxy_<label> subfolder of the mass point directory."""
-            d = out_dir / f'mpi{_flabel(mpi_val)}' / f'mA_{_flabel(mA_val)}'
-            if lxy_label is not None:
-                d = d / f'lxy_{lxy_label}'
-            os.makedirs(d, exist_ok=True)
-            return d
+# ROC curve plotting
+for lxy_label in lxy_labels:
+    roc_t = _bin_roc_trained.get(lxy_label)
+    if roc_t is None:
+        continue
+    fpr_t, tpr_t, auc_t = roc_t
+    fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+    ax.plot(fpr_t, tpr_t, color='#d62728', linewidth=2.0, label=rf'Per-bin BDT (AUC = {auc_t:.3f})')
+    _fprs = [fpr_t]
+    _tprs = [tpr_t]
+    _lo = _style_roc(ax, *_fprs, logy=True, tprs=_tprs)
+    ax.plot([_lo, 1], [_lo, 1], 'k--', alpha=0.4, linewidth=1.0)
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title(rf'ROC $l_{{xy}}$ {lxy_pretty[lxy_label]} cm')
+    ax.legend(loc='lower right', fontsize=9, framealpha=0.9)
+    ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=11, fontstyle="italic", fontweight="bold", va="top", ha="left")
+    ax.tick_params(direction="in", top=True, right=True, which="both")
+    _fout = _roc_lxy_dir / f'ROC_bylxy_{lxy_label}.png'
+    fig.savefig(_fout, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
-        # ---------------------------------------------------------------------------
-        # ROC curve
-        # ---------------------------------------------------------------------------
-        fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-        ax.plot(fpr, tpr, color='#1f77b4', linewidth=2.0, label=f'Global BDT (AUC = {auc:.3f})')
-        ax.plot([0, 1], [0, 1], 'k--', alpha=0.4, linewidth=1.0)
 
-        # Overlay the cut-and-count points
-        _cnc_marker = {"_minBias": "X", "_QCD": "P"}
-        _cnc_points = sorted({(mpi, mA, c) for tag, _sf, _ls, _lbl in SUB_BKGS
-                              for (mpi, mA, c) in CNC_POINTS.get(tag, {})
-                              if (mpi, mA) in CNC_LXY_DIRS})
-        _cnc_cmap  = plt.get_cmap('tab10')
-        _cnc_color = {p: _cnc_cmap(i % 10) for i, p in enumerate(_cnc_points)}
-        _cnc_seen = set()
-        for tag, _sf, _ls, _lbl in SUB_BKGS:
-            for (mpi_p, mA_p, ctau_p), (eff, rej) in sorted(CNC_POINTS.get(tag, {}).items()):
-                if (mpi_p, mA_p) not in CNC_LXY_DIRS:
-                    continue
-                lab = None
-                if (mpi_p, mA_p, ctau_p) not in _cnc_seen:
-                    lab = rf'$m_\pi={mpi_p:g}$, $m_A={mA_p:g}$, $c\tau={ctau_p:g}$ mm'
-                    _cnc_seen.add((mpi_p, mA_p, ctau_p))
-                ax.scatter([1.0 - rej], [eff], marker=_cnc_marker.get(tag, "X"), s=45,
-                           color=_cnc_color[(mpi_p, mA_p, ctau_p)], edgecolor='k', linewidth=0.4,
-                           zorder=6, label=lab)
+# Score all events
+print("Scoring all events (5 minutes)")
+_score_cols = input_vars + cond_vars
+_score_pos  = [df_global.columns.get_loc(c) for c in _score_cols]
+_scores     = np.full(len(df_global), np.nan, dtype=np.float32)
+_lxy_all    = df_global['lxy_bin'].to_numpy()
+_CHUNK      = 2_000_000
 
-        ax.set_xlabel('False Positive Rate')
-        ax.set_ylabel('True Positive Rate')
-        ax.set_title('Global BDT ROC curve')
-        ax.legend(loc='lower right', fontsize=9, framealpha=0.9)
-        ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=11, fontstyle="italic", fontweight="bold", va="top", ha="left")
-        ax.tick_params(direction="in", top=True, right=True, which="both")
-        fig.savefig(out_dir / f'ROC_globalBDT{OUT_TAG}.png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
+#Do it in chunks, to reduce memory
+for lxy_label, _model in _bin_models.items():
+    _rows = np.flatnonzero(_lxy_all == lxy_label)
+    if len(_rows) == 0:
+        continue
+    for _i in range(0, len(_rows), _CHUNK):
+        _idx = _rows[_i:_i + _CHUNK]
+        _scores[_idx] = _model.predict_proba(
+            df_global.iloc[_idx, _score_pos])[:, 1]
+df_global['score'] = _scores
 
-        # ---------------------------------------------------------------------------
-        # Feature importance, top-N input variables
-        # ---------------------------------------------------------------------------
-        feat_names = list(input_vars + cond_vars)
-        importances = np.asarray(bdt.feature_importances_, dtype=float)
-        order       = np.argsort(importances)[::-1]
-        top_n       = min(30, len(feat_names))
-        top_idx     = order[:top_n][::-1]  # reversed so the largest is at the top of barh
-        fig, ax = plt.subplots(figsize=(7.5, max(4.0, 0.28 * top_n)), constrained_layout=True)
-        ax.barh(range(top_n), importances[top_idx], color='#1f77b4', edgecolor='#0f3b5f', linewidth=0.5)
-        ax.set_yticks(range(top_n))
-        ax.set_yticklabels([feat_names[i] for i in top_idx], fontsize=7)
-        ax.set_xlabel('Feature importance (gain)')
-        ax.set_title(f'Global BDT feature importance (top {top_n})')
-        ax.text(0.98, 0.02, "Preliminary", transform=ax.transAxes, fontsize=11,
-                fontstyle="italic", fontweight="bold", va="bottom", ha="right")
-        ax.tick_params(direction="in", top=True, right=True, which="both")
-        fig.savefig(out_dir / f'feature_importance_globalBDT{OUT_TAG}.png', dpi=150, bbox_inches='tight')
-        plt.close(fig)
+# Pull columns we'll need repeatedly in df_global up front to avoid repeated pandas queries
+_EMPTY_I  = np.empty(0, dtype=np.int64)
+_SCORE_A  = df_global['score'].to_numpy()
+_LABEL_A  = df_global['label'].to_numpy()
+_MASS_A   = df_global['SV1_mass'].to_numpy()
+_CTAU_A   = df_global['param_ctau'].to_numpy()
+_THETA_A  = df_global[COND_COL].to_numpy() if use_conditional else None
 
-        # Also dump the full ranking to a text file for reference.
-        _fi_lines = ["rank  importance  feature"]
-        for r, i in enumerate(order):
-            _fi_lines.append(f'{r:>4}  {importances[i]:>10.5f}  {feat_names[i]}')
-        (out_dir / f'feature_importance_globalBDT{OUT_TAG}.txt').write_text('\n'.join(_fi_lines) + '\n')
+_lxy_ser = df_global['lxy_bin']
+if not isinstance(_lxy_ser.dtype, pd.CategoricalDtype):
+    _lxy_ser = _lxy_ser.astype(pd.CategoricalDtype(categories=lxy_labels))
+_LXY_CODE = _lxy_ser.cat.codes.to_numpy()
+_CODE_OF  = {str(_c): _i for _i, _c in enumerate(_lxy_ser.cat.categories)}
+del _lxy_ser
 
-        lxy_test  = df_global.loc[X_test.index, 'lxy_bin'].to_numpy()
-        y_test_a  = np.asarray(y_test)
-        w_test_a  = np.asarray(w_test)
+# Map each signal point (mpi, mA, ctau) to the row numbers of its events in df_global
+_sig_i = np.flatnonzero(_LABEL_A == 1)
+_MPI_S = df_global['param_mpi'].to_numpy()[_sig_i]
+_MA_S  = df_global['param_mA'].to_numpy()[_sig_i]
+_CT_S  = _CTAU_A[_sig_i]
+_SIG_ROWS = {}
+for _ct, _ma, _mp in param_grid:
+    _k = (_mp, _ma, _ct)
+    if _k in _SIG_ROWS:
+        continue
+    _SIG_ROWS[_k] = _sig_i[(_MPI_S == _k[0]) & (_MA_S == _k[1]) & (_CT_S == _k[2])]
+del _MPI_S, _MA_S, _CT_S, _sig_i
 
-        # Per-bin global ROC curve, computed once and reused for every mass point.
-        _bin_roc = {}   # lxy_label -> (fpr, tpr, auc)
-        for lxy_label in lxy_labels:
-            m = (lxy_test == lxy_label)
-            # Need both classes present to define a ROC.
-            if m.sum() < 10 or len(np.unique(y_test_a[m])) < 2:
+_BKG_ROWS = np.flatnonzero(_LABEL_A == 0)
+_BKG_MASS = _MASS_A[_BKG_ROWS]
+
+# Group scores by lxy bin
+def _split_by_bin(rows):
+    out = {}
+    if len(rows) == 0:
+        return out
+    codes  = _LXY_CODE[rows]
+    scores = _SCORE_A[rows]
+    for _lbl, _cd in _CODE_OF.items():
+        _m = (codes == _cd)
+        if _m.any():
+            out[_lbl] = scores[_m]
+    return out
+
+# Per-key slices, built on first use and reused across every FPR target
+_SIG_SLICES = {}
+_BKG_SLICES = {}
+def _sig_slices(key):
+    hit = _SIG_SLICES.get(key)
+    if hit is None:
+        rows = _SIG_ROWS.get(key, _EMPTY_I)
+        n_all = len(rows)
+        res = _signal_mass_window(key)
+        if res is not None and n_all:
+            (lo, hi), _c, _h = res
+            _m   = _MASS_A[rows]
+            rows = rows[(_m >= lo) & (_m <= hi)]
+        hit = (n_all, len(rows), _split_by_bin(rows))
+        _SIG_SLICES[key] = hit
+    return hit
+
+def _bkg_slices(key):
+    res = _signal_mass_window(key)
+    lo, hi = ((None, None) if res is None else res[0])
+    theta = _theta_of(key) if use_conditional else None
+    ck = (lo, hi, theta)
+    hit = _BKG_SLICES.get(ck)
+    if hit is None:
+        rows = _BKG_ROWS
+        if res is not None:
+            rows = rows[(_BKG_MASS >= lo) & (_BKG_MASS <= hi)]
+        n_win = len(rows)
+        if use_conditional and n_win:
+            rows = rows[_THETA_A[rows] == theta]
+        hit = (n_win, _split_by_bin(rows))
+        _BKG_SLICES[ck] = hit
+    return hit
+
+def _drop_key_slices():
+    _SIG_SLICES.clear()
+    _BKG_SLICES.clear()
+
+# Group ctau values by (mpi, mA) for the per-signal-point plots below.
+mpi_mA_groups = {}
+for ctau_val, mA_val, mpi_val in param_grid:
+    mpi_mA_groups.setdefault((mpi_val, mA_val), []).append(ctau_val)
+
+########################
+###### PLOTTING ########
+########################
+
+# Discriminant (BDT score) distribution — one per (mpi, mA) PER LXY BIN
+FIGSIZE     = (8.5, 6.5)
+MASS_COLORS = ["#d62728", "#ff7f0e", "#2ca02c", "#1f77b4", "#e377c2"]
+BKG_FACE    = "#7fc7c4"
+BKG_EDGE    = "#2f5f5d"
+disc_bins   = np.linspace(0.0, 1.0, 51)
+disc_widths = np.diff(disc_bins)
+_bkg_disc_by_bin = _split_by_bin(_BKG_ROWS)
+for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
+    _disc_sig = {c: _split_by_bin(_SIG_ROWS.get((float(mpi_val), float(mA_val), float(c)), _EMPTY_I)) for c in ctau_vals}
+    for lxy_label in _bin_models:
+        bkg_disc = _bkg_disc_by_bin.get(lxy_label, np.empty(0, dtype=np.float32))
+        fig, ax = plt.subplots(figsize=(7.2, 5.6), constrained_layout=True)
+        hb, _ = np.histogram(bkg_disc[~np.isnan(bkg_disc)], bins=disc_bins)
+        if hb.sum() > 0:
+            hb = hb / hb.sum()
+        ax.bar(disc_bins[:-1], hb, width=disc_widths, align='edge', color=BKG_FACE, edgecolor=BKG_EDGE, linewidth=0.6, label='Background', zorder=1)
+
+        _drew = False
+        for i, ctau_val in enumerate(sorted(ctau_vals)):
+            _sig_disc = _disc_sig[ctau_val].get(lxy_label)
+            if _sig_disc is None or len(_sig_disc) < 5:
                 continue
-            fpr_b, tpr_b, _ = roc_curve(y_test_a[m], y_score[m], sample_weight=w_test_a[m])
-            auc_b = roc_auc_score(y_test_a[m], y_score[m], sample_weight=w_test_a[m])
-            _bin_roc[lxy_label] = (fpr_b, tpr_b, auc_b)
-
-        _cnc_lxy  = _load_cnc_lxy_points(_cnc_bkg_for_tag(OUT_TAG))
-        _cnc_cmap = plt.get_cmap('tab10')
-        for (mpi_p, mA_p), per_bin in sorted(_cnc_lxy.items()):
-            for lxy_label in lxy_labels:
-                roc = _bin_roc.get(lxy_label)
-                if roc is None:
-                    continue
-                fpr_b, tpr_b, auc_b = roc
-                fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
-                ax.plot(fpr_b, tpr_b, color='#1f77b4', linewidth=2.0,
-                        label=rf'BDT $l_{{xy}}$ {lxy_pretty[lxy_label]} cm (AUC = {auc_b:.3f})')
-                ax.plot([0, 1], [0, 1], 'k--', alpha=0.4, linewidth=1.0)
-                # cutncount tables use '-' where workingpoint labels use 'to'.
-                pts = per_bin.get(lxy_label.replace("to", "-"), {})
-                for i, (ctau_v, (eff, rej)) in enumerate(sorted(pts.items())):
-                    ax.scatter([1.0 - rej], [eff], marker='o', s=45,
-                               color=_cnc_cmap(i % 10), edgecolor='k', linewidth=0.4,
-                               zorder=6, label=rf'$c\tau={ctau_v:g}$ mm')
-                ax.set_xlabel('False Positive Rate')
-                ax.set_ylabel('True Positive Rate')
-                ax.set_title(rf'ROC $m_\pi={mpi_p:g}$, $m_A={mA_p:g}$, $l_{{xy}}$ {lxy_pretty[lxy_label]} cm')
-                ax.legend(loc='lower right', fontsize=9, framealpha=0.9)
-                ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=11, fontstyle="italic", fontweight="bold", va="top", ha="left")
-                ax.tick_params(direction="in", top=True, right=True, which="both")
-                _fout = _mp_dir(mpi_p, mA_p, lxy_label) / f'ROC_bylxy_{lxy_label}{OUT_TAG}.png'
-                fig.savefig(_fout, dpi=150, bbox_inches='tight')
-                plt.close(fig)
-
-        # ---------------------------------------------------------------------------
-        # Score all events
-        # ---------------------------------------------------------------------------
-        X_all              = df_global[input_vars + cond_vars]
-        df_global          = df_global.copy()
-        df_global['score'] = bdt.predict_proba(X_all)[:, 1]
-
-        # Group ctau values by (mpi, mA) for the per-signal-point plots below.
-        mpi_mA_groups = {}
-        for ctau_val, mA_val, mpi_val in param_grid:
-            mpi_mA_groups.setdefault((mpi_val, mA_val), []).append(ctau_val)
-
-        # ---------------------------------------------------------------------------
-        # Discriminant (BDT score) distribution — one per (mpi, mA), lines = ctau
-        # ---------------------------------------------------------------------------
-        disc_bins   = np.linspace(0.0, 1.0, 51)
-        disc_widths = np.diff(disc_bins)
-        bkg_disc    = df_global.loc[df_global['label'] == 0, 'score'].values
-
-        for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
-            plot_dir_g = _mp_dir(mpi_val, mA_val)
-            fig, ax = plt.subplots(figsize=(7.2, 5.6), constrained_layout=True)
-            hb, _ = np.histogram(bkg_disc, bins=disc_bins)
-            if hb.sum() > 0:
-                hb = hb / hb.sum()
-            ax.bar(disc_bins[:-1], hb, width=disc_widths, align='edge', color=BKG_FACE, edgecolor=BKG_EDGE, linewidth=0.6, label='Background', zorder=1)
-
-            for i, ctau_val in enumerate(sorted(ctau_vals)):
-                sig_mask = (
-                    (df_global['label']      == 1) &
-                    (df_global['param_ctau'] == float(ctau_val)) &
-                    (df_global['param_mA']   == float(mA_val))   &
-                    (df_global['param_mpi']  == float(mpi_val))
-                )
-                if int(sig_mask.sum()) < 5:
-                    continue
-                hs, _ = np.histogram(df_global.loc[sig_mask, 'score'].values, bins=disc_bins)
-                if hs.sum() > 0:
-                    hs = hs / hs.sum()
-                ax.stairs(hs, disc_bins, color=MASS_COLORS[i % len(MASS_COLORS)], linewidth=1.6, label=rf'$c\tau={ctau_val:g}$ mm', zorder=3 + i)
-
-            ax.set_xlabel('BDT score')
-            ax.set_ylabel('a.u.')
-            ax.set_xlim(0.0, 1.0)
-            ax.set_title(rf'Discriminant Global $m_\pi={mpi_val:g}$ GeV, $m_A={mA_val:g}$ GeV')
-            ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=11, fontstyle="italic", fontweight="bold", va="top", ha="left")
-            ax.legend(loc='upper center', fontsize=9, framealpha=0.9)
-            ax.tick_params(direction="in", top=True, right=True, which="both")
-            _fout = plot_dir_g / f'Disc_global_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}{OUT_TAG}.png'
-            fig.savefig(_fout, dpi=150, bbox_inches='tight')
+            hs, _ = np.histogram(_sig_disc, bins=disc_bins)
+            if hs.sum() > 0:
+                hs = hs / hs.sum()
+            ax.stairs(hs, disc_bins, color=MASS_COLORS[i % len(MASS_COLORS)], linewidth=1.6, label=rf'$c\tau={ctau_val:g}$ mm', zorder=3 + i)
+            _drew = True
+        if not _drew:
             plt.close(fig)
+            continue
 
-        def _bkg_param_mask(key):
-            """In conditional mode, restrict background to the copy tagged with `key`'s
-            params (the parametric BDT must be evaluated *at* that point). None otherwise."""
-            if not use_conditional:
-                return None
-            return ((df_global['param_mpi']  == key[0]) &
-                    (df_global['param_mA']   == key[1]) &
-                    (df_global['param_ctau'] == key[2]))
+        ax.set_xlabel('BDT score')
+        ax.set_ylabel('a.u.')
+        ax.set_xlim(0.0, 1.0)
+        ax.set_title(rf'Discriminant $m_\pi={mpi_val:g}$, $m_A={mA_val:g}$ GeV, ' rf'$l_{{xy}}$ {lxy_pretty[lxy_label]} cm')
+        ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=11, fontstyle="italic", fontweight="bold", va="top", ha="left")
+        ax.legend(loc='upper center', fontsize=9, framealpha=0.9)
+        ax.tick_params(direction="in", top=True, right=True, which="both")
+        _fout = (_mp_dir(mpi_val, mA_val, lxy_label) / f'Disc_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}_lxy_{lxy_label}.png')
+        fig.savefig(_fout, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+del _bkg_disc_by_bin
 
-        _MASS_WINDOW_CACHE  = {}
+# Define mass windows
+_MASS_WINDOW_CACHE  = {}
+def _signal_mass_window(key):
+    if not MASS_WINDOW_ACTIVE: #if no window is selected, scan over all the mass range
+        return None
+    if key in _MASS_WINDOW_CACHE:
+        return _MASS_WINDOW_CACHE[key]
+    mA   = key[1]
+    half = _mass_window_halfwidth(mA)
+    win  = (mA - half, mA + half)
+    _MASS_WINDOW_CACHE[key] = (win, mA, half)
+    return _MASS_WINDOW_CACHE[key]
 
-        def _signal_mass_window(key):
-            #Mass-dependent window
-            if not MASS_WINDOW_ACTIVE: #if no window is selected, scan over all the mass range
-                return None
-            if key in _MASS_WINDOW_CACHE:
-                return _MASS_WINDOW_CACHE[key]
-            mA   = key[1]
-            half = _mass_window_halfwidth(mA)
-            win  = (mA - half, mA + half)
-            _MASS_WINDOW_CACHE[key] = (win, mA, half)
-            return _MASS_WINDOW_CACHE[key]
+def _counts_above_thr(scores, t):
+    return int(np.count_nonzero(scores > t))
 
-        def _mass_window_mask(key):
-            #Select events inside SV1 mass window
-            res = _signal_mass_window(key)
-            if res is None:
-                return None
-            (lo, hi), _center, _half = res
-            return (df_global['SV1_mass'] >= lo) & (df_global['SV1_mass'] <= hi)
+# Convert BDT score into a physical yield
+def _bkg_b_at(t, key, lxy_label, theta=None):
+    sc = _bkg_slices(key)[1].get(lxy_label)
+    if sc is None or len(sc) == 0:
+        return 0.0, 0
+    denom = MINBIAS_NGEN_AFTERFILTER
+    if theta is not None:
+        cov = _bkg_cov.get(float(theta))
+        if cov and cov > 0:
+            denom = denom * cov
+    n = _counts_above_thr(sc, t)
+    return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (n / denom), n
 
-        def _combine_masks(*masks):
-            """AND together the non-None boolean masks; None if all are None."""
-            out = None
-            for m in masks:
-                if m is None:
+def _sig_s_at(key, t, lxy_label):
+    sc = _sig_slices(key)[2].get(lxy_label)
+    if sc is None or len(sc) == 0:
+        return None
+    n_raw   = _counts_above_thr(sc, t)
+    sig_eff = n_raw / SIG_NGEN[key]
+    return PB_TO_FB * LUMI_FB * sig_eff, n_raw
+
+# Conditional mode (pBDT): each background event is scored at one theta (ctau or mA/mpi)
+_bkg_cov = {}
+if use_conditional:
+    _U = int(len(_BKG_ROWS))
+    _v, _c = np.unique(_THETA_A[_BKG_ROWS], return_counts=True)
+    for _vv, _cc in zip(_v, _c):
+        _bkg_cov[float(_vv)] = (_cc / _U) if _U > 0 else 1.0
+
+##############################
+#### COMPUTE SIGNIFICANCE ####
+##############################
+if _args.significance:
+    print("Computing significance and plotting (2-3 minutes)")
+    fpr_targets = list(FPR_TARGETS)
+    _thr_at = {}
+    for f_t in fpr_targets:
+        for lxy_label, (_fpr_b, _thr_b) in _bin_thr.items():
+            _wp = _wp_from_roc(_fpr_b, _thr_b, f_t)
+            if _wp is None:
+                print(f"Lxy bin {lxy_label} has no usable cut ")
+                continue
+            _thr_at[(f_t, lxy_label)] = _wp
+            if _wp[1] > 3.0 * f_t:
+                print(f"Lxy bin {lxy_label} cannot reach FPR={f_t:g}; closest achievable is {_wp[1]:.2e}")
+
+    fpr_rows = []
+    for f_t in fpr_targets:
+        _ts = [_thr_at[(f_t, l)][0] for l in _bin_thr]
+        _fa = [_thr_at[(f_t, l)][1] for l in _bin_thr]
+        fpr_rows.append((f_t, float(np.median(_fa)), float(np.median(_ts))))
+
+    # Plot significance vs ctau
+    _FPR_MARKERS = ["o", "s", "^", "D", "v", "P", "X", "<", ">", "*", "h", "p"]
+    _FPR_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
+                   "#17becf", "#e377c2", "#8c564b", "#000000", "#bcbd22",
+                   "#7f7f7f", "#aec7e8"]
+    _MANY_FPR = len(fpr_rows) > 4
+
+     # Make plot labels
+    def _fpr_tex(f_t):
+        e = int(np.floor(np.log10(f_t)))
+        m = f_t / 10.0 ** e
+        if abs(m - 10.0) < 1e-9:
+            e, m = e + 1, 1.0
+        return rf'10^{{{e}}}' if abs(m - 1.0) < 1e-9 else rf'{m:.3g}\times 10^{{{e}}}'
+
+    def _significance_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val, lxy_label=None):
+        if not ctaus:
+            return
+        order = np.argsort(np.array(ctaus, dtype=float))
+        x = np.array(ctaus, dtype=float)[order]
+
+        def _span(vals, digits):
+            lo, hi = min(vals), max(vals)
+            def _f(v, d):
+                return f'{int(v):,}' if v < 10000 and float(v).is_integer() else f'{v:.{d}g}'
+            return (_f(lo, digits) if lo == hi
+                    else f'{_f(lo, digits - 1)}–{_f(hi, digits - 1)}')
+
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        z_max = 0.0
+        fpr_handles = []
+        for i, (f_t, _f_ach, _thr) in enumerate(fpr_rows):
+            z = np.array([cells[(f_t, keys[j])][1] for j in range(len(keys))], dtype=float)[order]
+            z = np.nan_to_num(z, nan=0.0)
+            z_max = max(z_max, float(z.max()))
+            _ms = 5 if _MANY_FPR else 7
+            ax.plot(x, z, color=_FPR_COLORS[i % len(_FPR_COLORS)], marker=_FPR_MARKERS[i % len(_FPR_MARKERS)], markersize=_ms, linewidth=1.4 if _MANY_FPR else 1.8, zorder=3 + i)
+            _b_s  = _span([cells[(f_t, k)][3] for k in keys], 3)
+            _nb_s = _span([cells[(f_t, k)][5] for k in keys], 3)
+            _lab  = rf'FPR$={_fpr_tex(f_t)}$'
+            _lab += (f', $B$={_b_s} ({_nb_s})' if _MANY_FPR else f'\n$B$ = {_b_s}  ({_nb_s} raw)')
+            fpr_handles.append(Line2D([0], [0], color=_FPR_COLORS[i % len(_FPR_COLORS)], marker=_FPR_MARKERS[i % len(_FPR_MARKERS)], markersize=_ms, label=_lab))
+        ax.set_xscale('log')
+        ax.set_xlabel(r'$c\tau$ [mm]')
+        ax.set_ylabel(r'Asymptotic significance $Z$')
+        _ncol  = 2 if _MANY_FPR else 1
+        _nrows = int(np.ceil(len(fpr_handles) / _ncol))
+        _head  = 1.45 + (0.10 if _MANY_FPR else 0.15) * max(0, _nrows - 1)
+        ax.set_ylim(0.0, z_max * _head if z_max > 0 else 1.0)
+        ax.text(0.0, 1.01, PLOT_LABEL, transform=ax.transAxes, ha='left', va='bottom', fontweight='bold', fontsize=13)
+        ax.text(1.0, 1.01, rf'{LUMI_FB:g} fb$^{{-1}}$ (13.6 TeV, 2024)', transform=ax.transAxes, ha='right', va='bottom', fontsize=12)
+        txt = [rf'Scenario {SCENARIO}', rf'$m_{{\pi_3}} = {mpi_val:g}$ GeV', rf"$m_{{A'}} = {mA_val:g}$ GeV"]
+        res = _signal_mass_window(keys[0])
+        if res is not None:
+            (lo, hi), _c, _h = res
+            txt.append(rf'Mass window: $[{lo:.2f}, {hi:.2f}]$ GeV')
+        if lxy_label is not None:
+            txt.append(rf'$l_{{xy}} \in {lxy_label.replace("to", "-")}$ cm')
+        ax.text(0.04, 0.96, '\n'.join(txt), transform=ax.transAxes, va='top', ha='left', fontsize=11)
+        leg1 = ax.legend(handles=fpr_handles, loc='upper right', framealpha=0.9,
+                         fontsize=(7 if _MANY_FPR else 9), ncol=_ncol,
+                         labelspacing=(0.4 if _MANY_FPR else 0.7),
+                         columnspacing=0.8, handlelength=2.0,
+                         title=(r'$B$ = yield (raw MC evts)' if _MANY_FPR else None),
+                         title_fontsize=7)
+        ax.add_artist(leg1)
+        ax.tick_params(direction='in', top=True, right=True, which='both')
+        fig.tight_layout()
+        _fout = _mp_dir(mpi_val, mA_val, lxy_label) / f'significance_vs_ctau_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        fig.savefig(_fout, dpi=130)
+        plt.close(fig)
+
+    # Significance calculation
+    def _compute_significance_cells(keys, lxy_only=None):
+        _bins = [lxy_only] if lxy_only is not None else list(_bin_models)
+        cells = {}
+        for f_t, _f_ach, _thr_display in fpr_rows:
+            for k in keys:
+                s_tot, b_tot, saw_s = 0.0, 0.0, False
+                ns_tot, nb_tot = 0, 0
+                for _lb in _bins:
+                    thr = _thr_at.get((f_t, _lb))
+                    if thr is None:
+                        continue
+                    thr = thr[0]
+                    s = _sig_s_at(k, thr, _lb)
+                    b, n_b = _bkg_b_at(thr, k, _lb, theta=(_theta_of(k) if use_conditional else None))
+                    if s is not None:
+                        s, n_s = s
+                        s_tot += s
+                        ns_tot += n_s
+                        saw_s = True
+                    b_tot  += b
+                    nb_tot += n_b
+                s = s_tot if saw_s else None
+                b = b_tot
+                if s is None or s <= 0.0 or b <= 0.0:
+                    cells[(f_t, k)] = (float('nan'), 0.0, s, b, ns_tot, nb_tot)
                     continue
-                out = m if out is None else (out & m)
-            return out
+                Z  = float(np.sqrt(2.0 * ((s + b) * np.log1p(s / b) - s)))
+                p0 = float(norm.sf(Z))
+                cells[(f_t, k)] = (p0, Z, s, b, ns_tot, nb_tot)
+        return cells
 
-       
-        def _counts_above_thr(scores, t):
-            return int(np.count_nonzero(scores > t))
+    # Main per-mass point loop (using all the functions above)
+    for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
+        keys = [(mpi_val, mA_val, c) for c in sorted(ctau_vals) if (mpi_val, mA_val, c) in SIG_NGEN]
+        if not keys:
+            continue
 
-        def _bkg_b_at(t, extra_mask=None, files=None):
-            base = (df_global['label'] == 0)
-            if extra_mask is not None:
-                base = base & extra_mask
-            b = 0.0
-            for fname in BKG_XSEC:
-                if BKG_XSEC.get(fname) is None or BKG_NGEN.get(fname) is None:
-                    continue
-                if files is not None and fname not in files:
-                    continue
-                sc = df_global.loc[base & (df_global['bkg_file'] == fname), 'score'].values
-                if len(sc) == 0:
-                    continue
-                # Denominator is frac*N_gen so a loaded subsample normalizes to the full sample.
-                b += BKG_XSEC[fname] * PB_TO_FB * LUMI_FB * (_counts_above_thr(sc, t) / _eff_ngen(fname))
-            return b
+        ctaus = [k[2] for k in keys]
+        cells = _compute_significance_cells(keys)
+        _significance_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val)
 
-        def _sig_s_at(key, t, extra_mask=None):
-            """Signal yield with score > t for `key`=(mpi, mA, ctau); None if no events."""
-            sel = ((df_global['label'] == 1) &
-                   (df_global['param_mpi']  == key[0]) &
-                   (df_global['param_mA']   == key[1]) &
-                   (df_global['param_ctau'] == key[2]))
-            if extra_mask is not None:
-                sel = sel & extra_mask
-            sc = df_global.loc[sel, 'score'].values
-            if len(sc) == 0:
-                return None
-            sig_eff = _counts_above_thr(sc, t) / SIG_NGEN[key]
-            # eff_S already includes the cascade BR (folded in by the MC) -> NO external BR factor.
-            return SIG_XSEC_PB * PB_TO_FB * LUMI_FB * sig_eff
-
-        # Background samples actually loaded, and their cross-section sum (denominator of
-        # the weighted-average count). Fixed across cut stages so the ratio = efficiency.
-        _bkg_files_loaded = [f for f in BKG_XSEC if BKG_XSEC.get(f) is not None and bool((df_global['bkg_file'] == f).any())]
-        _sigma_sum = sum(BKG_XSEC[f] for f in _bkg_files_loaded)
-
-        def _qcd_weighted(extra_mask=None, files=None):
-            #Cross-section-weighted average event count. `files` restricts to one sub-background.
-            base = (df_global['label'] == 0)
-            if extra_mask is not None:
-                base = base & extra_mask
-            _files = _bkg_files_loaded if files is None else [f for f in _bkg_files_loaded if f in files]
-            _norm  = sum(BKG_XSEC[f] for f in _files)
-            num = 0.0
-            for f in _files:
-                # Scale the loaded count to the full-sample equivalent (1/frac) so the
-                # weighted-average count is comparable across subsampled/fully-loaded files.
-                n_q = int((base & (df_global['bkg_file'] == f)).sum()) / _bkg_fraction(f)
-                num += BKG_XSEC[f] * n_q
-            return num / _norm if _norm > 0 else 0.0
-
-        def _sig_count(key, extra_mask=None):
-            #Raw signal event count
-            sel = ((df_global['label'] == 1) &
-                   (df_global['param_mpi']  == key[0]) &
-                   (df_global['param_mA']   == key[1]) &
-                   (df_global['param_ctau'] == key[2]))
-            if extra_mask is not None:
-                sel = sel & extra_mask
-            return int(sel.sum())
-
-        if _args.table:
-            # FPR -> threshold from the xsec-weighted ROC (closest grid point).
-            fpr_targets = sorted(_args.fpr_targets, reverse=True)
-            fpr_rows = []
-            for f_t in fpr_targets:
-                j      = int(np.argmin(np.abs(fpr - f_t)))
-                fpr_rows.append((f_t, float(fpr[j]), float(thresholds[j])))
-
-            _win_str = (', ' + _win_label_str()) if MASS_WINDOW_ACTIVE else ''
-            _hdr = (rf'Asimov significance $p_0$ ($Z$)  '
-                    rf'(presel.+SV+BDT{_win_str}, $\sigma_{{ggH}}\mathcal{{B}}(H\to\psi\bar\psi)='
-                    rf'{SIG_XSEC_PB:g}$ pb, $L={LUMI_FB:g}$ fb$^{{-1}}$)')
-
-            # Significance vs ctau (one line per FPR target), from the table cells.
-            _FPR_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"]
-            _FPR_MARKERS = ["o", "s", "^", "D", "v"]
-
-            def _significance_vs_ctau_plot(cells_by_sub, keys, ctaus, mpi_val, mA_val, lxy_label=None):
-                # cells_by_sub[sub_tag] = cells for that sub-background (same shared-BDT
-                # thresholds). In 'both' mode each FPR gets one line per sub-background
-                # (distinguished by linestyle); single modes draw one solid line per FPR.
-                if not ctaus:
-                    return
-                order = np.argsort(np.array(ctaus, dtype=float))
-                x = np.array(ctaus, dtype=float)[order]
-                fig, ax = plt.subplots(figsize=FIGSIZE)
-                z_max = 0.0
-                for i, (f_t, _f_ach, _thr) in enumerate(fpr_rows):
-                    for (sub_tag, _sf, ls, _lbl) in SUB_BKGS:
-                        cells = cells_by_sub[sub_tag]
-                        z = np.array([cells[(f_t, keys[j])][1] for j in range(len(keys))], dtype=float)[order]
-                        z = np.nan_to_num(z, nan=0.0)
-                        z_max = max(z_max, float(z.max()))
-                        ax.plot(x, z, color=_FPR_COLORS[i % len(_FPR_COLORS)], linestyle=ls,
-                                marker=_FPR_MARKERS[i % len(_FPR_MARKERS)], markersize=7,
-                                linewidth=1.8, zorder=3 + i)
-                ax.set_xscale('log')
-                ax.set_xlabel(r'$c\tau$ [mm]')
-                ax.set_ylabel(r'Asymptotic significance $Z$')
-                # Headroom so the header/annotations/legend don't collide with the curves.
-                ax.set_ylim(0.0, z_max * 1.45 if z_max > 0 else 1.0)
-                # Header: trigger (left) + lumi/energy (right), CMS-style.
-                ax.text(0.0, 1.01, TRIGGER_LABEL, transform=ax.transAxes, ha='left', va='bottom',
-                        fontweight='bold', fontsize=13)
-                ax.text(1.0, 1.01, rf'{LUMI_FB:g} fb$^{{-1}}$ (13.6 TeV, 2024)', transform=ax.transAxes,
-                        ha='right', va='bottom', fontsize=12)
-                # Annotations (model, masses, BR, mass window).
-                txt = [rf'Scenario {model_tag}', rf'$m_{{\pi_3}} = {mpi_val:g}$ GeV',
-                       rf"$m_{{A'}} = {mA_val:g}$ GeV"]
-                br = BR_A_MUMU.get((mpi_val, mA_val))
-                if br is not None:
-                    txt.append(rf"$B(A'\to\mu\mu) = {br:g}$")
-                res = _signal_mass_window(keys[0])
-                if res is not None:
-                    (lo, hi), _c, _h = res
-                    txt.append(rf'Mass window: $[{lo:.2f}, {hi:.2f}]$ GeV')
-                if lxy_label is not None:
-                    txt.append(rf'$l_{{xy}} \in {lxy_label.replace("to", "-")}$ cm')
-                ax.text(0.04, 0.96, '\n'.join(txt), transform=ax.transAxes, va='top', ha='left', fontsize=11)
-                # FPR colour legend always; a background-linestyle legend only when overlaying.
-                fpr_handles = [Line2D([0], [0], color=_FPR_COLORS[i % len(_FPR_COLORS)],
-                                      marker=_FPR_MARKERS[i % len(_FPR_MARKERS)], linestyle='-',
-                                      label=rf'FPR$=10^{{{int(round(np.log10(f_t)))}}}$')
-                               for i, (f_t, _a, _t) in enumerate(fpr_rows)]
-                leg1 = ax.legend(handles=fpr_handles, loc='upper right', framealpha=0.9, fontsize=10)
-                ax.add_artist(leg1)
-                if len(SUB_BKGS) > 1:
-                    bkg_handles = [Line2D([0], [0], color='k', linestyle=ls, label=lbl)
-                                   for (_st, _sf, ls, lbl) in SUB_BKGS]
-                    ax.legend(handles=bkg_handles, loc='center right', framealpha=0.9, fontsize=10)
-                ax.tick_params(direction='in', top=True, right=True, which='both')
-                fig.tight_layout()
-                _fout = _mp_dir(mpi_val, mA_val, lxy_label) / f'significance_vs_ctau_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}{OUT_TAG}.png'
-                fig.savefig(_fout, dpi=130)
-                plt.close(fig)
-
-            def _build_cells(keys, extra_mask=None, files=None):
-                """cells[(f_t, key)] = (p0, Z, s, b) at each FPR threshold, optionally
-                restricted to an extra mask (e.g. an lxy bin) and to one sub-background's
-                `files` (b only; s is background-independent). Mass window always applied."""
-                cells = {}
-                for f_t, _f_ach, thr in fpr_rows:
-                    for k in keys:
-                        mwin = _combine_masks(_mass_window_mask(k), extra_mask)
-                        s = _sig_s_at(k, thr, mwin)
-                        b = _bkg_b_at(thr, _combine_masks(_bkg_param_mask(k), mwin), files=files)
-                        if s is None or s <= 0.0 or b <= 0.0:
-                            cells[(f_t, k)] = (float('nan'), 0.0, s, b)
-                            continue
-                        Z  = float(np.sqrt(2.0 * ((s + b) * np.log1p(s / b) - s)))
-                        p0 = float(norm.sf(Z))
-                        cells[(f_t, k)] = (p0, Z, s, b)
-                return cells
-
-            def _write_asimov_tex(cells_by_sub, keys, ctaus, mpi_val, mA_val, lxy_label=None):
-                """Write the booktabs Asimov p0(Z) table(s). One tabular per sub-background
-                (labelled when overlaying) into a single OUT_TAG-suffixed file. When lxy_label
-                is given, the lxy range is added to the header and the file name suffix."""
-                hdr = _hdr
-                if lxy_label is not None:
-                    hdr = _hdr + rf'  [$l_{{xy}}\in {lxy_label.replace("to", "-")}$ cm]'
-                tex = []
-                for (sub_tag, _sf, _ls, sub_lbl) in SUB_BKGS:
-                    cells = cells_by_sub[sub_tag]
-                    hdr_b = hdr + (rf'  -- {sub_lbl}' if len(SUB_BKGS) > 1 else '')
-                    tex.append(r'\begin{tabular}{l c ' + 'c ' * len(ctaus) + r'}')
-                    tex.append(r'\toprule')
-                    tex.append(r'\multicolumn{' + str(2 + len(ctaus)) + r'}{l}{' + hdr_b + r'} \\')
-                    tex.append(r'\midrule')
-                    tex.append(r' & & ' + ' & '.join(rf'$m_\pi={mpi_val:g}$, $m_A={mA_val:g}$' for _ in ctaus) + r' \\')
-                    tex.append(r'FPR & BDT threshold & ' + ' & '.join(rf'$c\tau={c:g}$ mm' for c in ctaus) + r' \\')
-                    tex.append(r'\midrule')
-                    for f_t, _f_ach, thr in fpr_rows:
-                        row_cells = []
-                        for k in keys:
-                            p0, Z, _s, _b = cells[(f_t, k)]
-                            row_cells.append(rf'{p0:.2g} (${Z:.1f}\sigma$)')
-                        tex.append(rf'$10^{{{int(round(np.log10(f_t)))}}}$ & {thr:.4f} & '
-                                   + ' & '.join(row_cells) + r' \\')
-                    tex.append(r'\bottomrule')
-                    tex.append(r'\end{tabular}')
-                    tex.append('')
-                tex_path = _mp_dir(mpi_val, mA_val, lxy_label) / f'asimov_table_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}{OUT_TAG}.tex'
-                tex_path.write_text('\n'.join(tex) + '\n')
-
-            def _sb_table_lines(cells_by_sub, keys, header):
-                """Text block listing the actual S and B (xsec*lumi-weighted yields) that
-                feed each significance, one sub-block per FPR threshold, per sub-background."""
-                lines = [header]
-                for (sub_tag, _sf, _ls, sub_lbl) in SUB_BKGS:
-                    cells = cells_by_sub[sub_tag]
-                    if len(SUB_BKGS) > 1:
-                        lines.append(f'  [{sub_lbl}]')
-                    for f_t, _f_ach, thr in fpr_rows:
-                        lines.append(f'  FPR = {f_t:g}  (BDT score > {thr:.4f}):')
-                        sub = f'{"ctau":>10}{"S":>14}{"B":>14}{"Z":>10}{"p0":>12}'
-                        lines.append(sub)
-                        lines.append('  ' + '-' * (len(sub) - 2))
-                        for k in keys:
-                            p0, Z, s, b = cells[(f_t, k)]
-                            s_str = 'n/a' if s is None else f'{s:.4g}'
-                            b_str = 'n/a' if b is None else f'{b:.4g}'
-                            lines.append(f'{format(k[2],"g")+"mm":>10}{s_str:>14}{b_str:>14}{Z:>10.2f}{p0:>12.3g}')
-                        lines.append('')
-                return lines
-
-            for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
-                # Keep only signal points with a known N_gen (needed for the yield).
-                keys = [(mpi_val, mA_val, c) for c in sorted(ctau_vals)
-                        if (mpi_val, mA_val, c) in SIG_NGEN]
-                if not keys:
-                    continue
-
-                ctaus = [k[2] for k in keys]
-                # One cell set per sub-background (b restricted to its files, evaluated at the
-                # shared-BDT thresholds). Single modes have one entry; 'both' has two.
-                cells_by_sub = {st: _build_cells(keys, files=sf) for (st, sf, _ls, _lbl) in SUB_BKGS}
-
-                # Inclusive LaTeX table + significance vs ctau plot.
-                _write_asimov_tex(cells_by_sub, keys, ctaus, mpi_val, mA_val)
-                _significance_vs_ctau_plot(cells_by_sub, keys, ctaus, mpi_val, mA_val)
-
-                # Same table + plot per lxy bin; keep the per-bin cells for the cutflow below.
-                cells_by_lxy = {}   # lxy_label -> {sub_tag -> cells}
-                for lxy_label in lxy_labels:
-                    lxy_mask = df_global['lxy_bin'] == lxy_label
-                    cbs = {st: _build_cells(keys, lxy_mask, files=sf) for (st, sf, _ls, _lbl) in SUB_BKGS}
-                    cells_by_lxy[lxy_label] = cbs
-                    _write_asimov_tex(cbs, keys, ctaus, mpi_val, mA_val, lxy_label=lxy_label)
-                    _significance_vs_ctau_plot(cbs, keys, ctaus, mpi_val, mA_val, lxy_label=lxy_label)
-
-                #Cutflow: signal raw counts + per-background xsec-weighted count (no lumi)
-                cf = []
-                cf.append("Cutflow  (signal: raw event counts; "
-                          "bkg: weighted = sum_q sigma_q N_q / sum_q sigma_q, no lumi)")
-                cf.append(f'mpi = {mpi_val:g} GeV, mA = {mA_val:g} GeV')
-                cw  = 16
-                _wcols = [(sub_lbl, sf) for (_st, sf, _ls, sub_lbl) in SUB_BKGS]
-                hdr = (f'{"stage":>16}'
-                       + ''.join(f'{("ctau="+format(c,"g")+"mm"):>{cw}}' for c in ctaus)
-                       + ''.join(f'{(wl+" (wgt)"):>{cw}}' for wl, _ in _wcols))
-                cf.append(hdr)
-                cf.append('-' * len(hdr))
-                row = f'{"ntuple":>16}'
-                for k in keys:
-                    row += f'{_sig_count(k, None):>{cw}}'
-                for _wl, _wf in _wcols:
-                    row += f'{_qcd_weighted(None, files=_wf):>{cw}.1f}'
-                cf.append(row)
-
-                if MASS_WINDOW_ACTIVE:
-                    cf.append('')
-                    cf.append("SV1 mass window (per ctau; bkg weighted within that point's window):")
-                    sub = (f'{"ctau":>10} {"sig(win)":>12} '
-                           + ' '.join(f'{(wl+" wgt(win)"):>16}' for wl, _ in _wcols))
-                    cf.append(sub)
-                    cf.append('-' * len(sub))
-                    for k in keys:
-                        mwin = _mass_window_mask(k)
-                        row = f'{format(k[2],"g")+"mm":>10} {_sig_count(k, mwin):>12} '
-                        row += ' '.join(f'{_qcd_weighted(mwin, files=wf):>16.1f}' for _wl, wf in _wcols)
-                        cf.append(row)
-
-                # Actual S and B (xsec*lumi-weighted yields) feeding each significance,
-                # at every FPR threshold -- inclusive, then one block per lxy bin. The
-                # mass window (if active) is already folded into these yields.
-                cf.append('')
-                cf += _sb_table_lines(
-                    cells_by_sub, keys,
-                    "S and B entering each significance "
-                    "(inclusive; yields = sigma[pb] * 1e3 * L[fb^-1] * eff):")
-                for lxy_label in lxy_labels:
-                    cf.append('')
-                    cf += _sb_table_lines(
-                        cells_by_lxy[lxy_label], keys,
-                        f"S and B entering each significance "
-                        f"(lxy in {lxy_label.replace('to', '-')} cm):")
-
-                cutflow_txt = '\n'.join(cf)
-                cf_path = _mp_dir(mpi_val, mA_val) / f'cutflow_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}{OUT_TAG}.txt'
-                cf_path.write_text(cutflow_txt + '\n')
-
-
-# The significance-vs-ctau overlay (MinBias + QCD) is now produced inline by
-# _significance_vs_ctau_plot in --bkg both mode, so no separate combined pass is needed.
+        for lxy_label in _bin_models:
+            cbl = _compute_significance_cells(keys, lxy_only=lxy_label)
+            _significance_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, lxy_label=lxy_label)
+        _drop_key_slices()
