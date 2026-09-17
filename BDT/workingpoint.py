@@ -51,12 +51,15 @@ _parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau]"
 _parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
                      help="Train a parametric (conditional) BDT: one signal parameter (chosen "
                           "with --cond-var) is added as an input feature.")
-_parser.add_argument("--cond-var", choices=["ctau", "mratio"], default="mratio",
-                     help="Which signal parameter the conditional BDT is parametrised in "
-                          "(only used with --conditional). 'ctau': the lifetime [mm] "
-                          "(param_ctau). 'mratio': the mass ratio mA/mpi snapped to the "
-                          "nearest value of --mratio-grid (param_mratio). Output goes to "
-                          "<out-name>_condCtau or <out-name>_condMratio. Default: mratio.")
+_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi"], default=["mratio"],
+                     nargs="+",
+                     help="Which signal parameter(s) the conditional BDT is parametrised in "
+                          "(only used with --conditional). One or more of: 'ctau' the "
+                          "lifetime [mm] (param_ctau); 'mratio' the mass ratio mA/mpi "
+                          "snapped to the nearest value of --mratio-grid (param_mratio); "
+                          "'mpi' the pi_3 mass [GeV] (param_mpi). All given features are "
+                          "added to the BDT together. Output goes to <out-name>_cond<Tags>. "
+                          "Default: mratio.")
 _parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
                      help="Nominal mA/mpi values the signal points are snapped onto --cond-var mratio")
 _parser.add_argument("--train-max-events", type=int, default=15_000_000, metavar="N",
@@ -105,9 +108,11 @@ def _parse_holdout(specs):
 # Set all the necessary configurations
 SCENARIO             = _args.scenario
 use_conditional      = _args.conditional
-COND_VAR             = _args.cond_var
-COND_COL             = {"ctau": "param_ctau", "mratio": "param_mratio"}[COND_VAR]
-COND_TAG             = ({"ctau": "_condCtau", "mratio": "_condMratio"}[COND_VAR] if use_conditional else "")
+COND_VAR             = list(_args.cond_var)   # e.g. ["mratio"] or ["ctau", "mratio"]
+_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi"}
+_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi"}
+COND_COL             = [_COND_COL_OF[v] for v in COND_VAR]   # BDT feature column(s) for the cond-var(s)
+COND_TAG             = ("_cond" + "".join(_COND_TAG_OF[v] for v in COND_VAR) if use_conditional else "")
 MRATIO_GRID          = np.array(sorted(set(_args.mratio_grid)), dtype=np.float64)
 TRAIN_MAX_EVENTS     = max(0, _args.train_max_events)   # 0 = no cap on training-set size
 FPR_TARGETS          = _resolve_fpr_targets()
@@ -143,9 +148,12 @@ def _win_label_str():
 def _mratio(mpi, mA):
     return float(MRATIO_GRID[np.argmin(np.abs(MRATIO_GRID - mA / mpi))])
 
-# Which parametrs to use for the pBDT (only when conditional is True)
+# Value(s) of the cond-var(s) for a signal point (mpi, mA, ctau) -- always a tuple, one
+# entry per --cond-var in the same order, used to match background pseudo-theta rows.
 def _theta_of(key):
-    return key[2] if COND_VAR == "ctau" else _mratio(key[0], key[1])
+    mpi, mA, ctau = key[0], key[1], key[2]
+    _val_of = {"ctau": ctau, "mratio": _mratio(mpi, mA), "mpi": mpi}
+    return tuple(_val_of[v] for v in COND_VAR)
 
 # Turn FPR target into BDT score
 def _wp_from_roc(fpr_arr, thr_arr, target):
@@ -330,7 +338,7 @@ available  = set(df_sig.columns) & set(df_bkg.columns)
 input_vars = [v for v in BDT_VARIABLES if v in available]
 missing    = [v for v in BDT_VARIABLES if v not in available]
 
-cond_vars = [COND_COL] if use_conditional else []
+cond_vars = list(COND_COL) if use_conditional else []
 
 # Build the output directories
 out_dir       = OUT_ROOT
@@ -351,11 +359,12 @@ def _mp_dir(mpi_val, mA_val, lxy_label=None):
 # Train BDT
 # ---------------------------------------------------------------------------
 if use_conditional:
-    # Parametric BDT conditioned on one signal parameter (ctau or mA/mpi): each
-    # background event gets a value drawn uniformly from the signal grid.
-    _rng     = np.random.default_rng(42)
-    _g_theta = np.array(sorted(set(df_sig[COND_COL].to_numpy())), dtype=np.float64)
-    df_bkg[COND_COL] = _g_theta[_rng.integers(0, len(_g_theta), size=len(df_bkg))]
+    # Parametric BDT conditioned on 1+ signal parameters: each background event
+    # copies the full (cond-var...) combination from a real signal point, drawn
+    # uniformly -- never an unphysical mix of values from different signal points.
+    _rng            = np.random.default_rng(42)
+    _sig_theta_grid = df_sig[COND_COL].drop_duplicates().to_numpy()
+    df_bkg[COND_COL] = _sig_theta_grid[_rng.integers(0, len(_sig_theta_grid), size=len(df_bkg))]
 
 df_global = pd.concat([df_sig, df_bkg], ignore_index=True)
 del df_sig, df_bkg
@@ -653,7 +662,7 @@ def _bkg_slices(key):
             rows = rows[(_BKG_MASS >= lo) & (_BKG_MASS <= hi)]
         n_win = len(rows)
         if use_conditional and n_win:
-            rows = rows[_THETA_A[rows] == theta]
+            rows = rows[np.all(_THETA_A[rows] == np.asarray(theta), axis=1)]
         hit = (n_win, _split_by_bin(rows))
         _BKG_SLICES[ck] = hit
     return hit
@@ -738,7 +747,7 @@ def _bkg_b_at(t, key, lxy_label, theta=None):
         return 0.0, 0
     denom = MINBIAS_NGEN_AFTERFILTER
     if theta is not None:
-        cov = _bkg_cov.get(float(theta))
+        cov = _bkg_cov.get(tuple(theta))
         if cov and cov > 0:
             denom = denom * cov
     n = _counts_above_thr(sc, t)
@@ -756,9 +765,9 @@ def _sig_s_at(key, t, lxy_label):
 _bkg_cov = {}
 if use_conditional:
     _U = int(len(_BKG_ROWS))
-    _v, _c = np.unique(_THETA_A[_BKG_ROWS], return_counts=True)
+    _v, _c = np.unique(_THETA_A[_BKG_ROWS], axis=0, return_counts=True)
     for _vv, _cc in zip(_v, _c):
-        _bkg_cov[float(_vv)] = (_cc / _U) if _U > 0 else 1.0
+        _bkg_cov[tuple(_vv)] = (_cc / _U) if _U > 0 else 1.0
 
 ##############################
 #### COMPUTE SIGNIFICANCE ####
