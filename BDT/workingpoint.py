@@ -80,6 +80,18 @@ _parser.add_argument("--out-name", default="significance_plots_priv",
                      help="Base output directory name under BDT/")
 _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                      help="Keep only events with passL1 != 0 (the L1-seed decision)")
+_parser.add_argument("--wp-min-bkg", type=int, default=1,
+                     help="Working-point choice: minimum raw background events an FPR must retain "
+                          "to be eligible (default 1 = non-zero background only)")
+_parser.add_argument("--wp-agg", choices=["median", "mean", "sum"], default="median",
+                     help="Working-point choice: statistic aggregating Z across signal points "
+                          "per lxy bin (default median)")
+_parser.add_argument("--wp-per-point", action="store_true",
+                     help="Working-point choice: one WP per (mpi,mA,ctau,lxy_bin) instead of "
+                          "one per lxy bin")
+_parser.add_argument("--choose-wp-only", action="store_true",
+                     help="Skip training and the significance scan; only re-pick the working "
+                          "points from the existing significance_data.json in the output dir")
 _args = _parser.parse_args()
 
 #Explicit --fpr-targets, plus the --fpr-scan log grid
@@ -132,6 +144,87 @@ MINBIAS_XSEC_BEFOREFILTER = 1.051e7
 MINBIAS_XSEC = MINBIAS_XSEC_BEFOREFILTER * (MINBIAS_NGEN_AFTERFILTER / MINBIAS_NGEN_BEFOREFILTER)  # ~= 5.18e5 pb
 OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"Scenario{SCENARIO}{HOLD_TAG}")
 PLOT_LABEL = "Scouting Asymptotic Significance"
+
+
+def _lxy_lo(label):
+    return float(label.split("to")[0].replace("p", "."))
+
+
+def _choose_wp_per_point(records, min_bkg):
+    groups = {}
+    for r in records:
+        if r["threshold"] is None:
+            continue
+        groups.setdefault((r["mpi"], r["mA"], r["ctau"], r["lxy_bin"]), []).append(r)
+    chosen, n_fallback = [], 0
+    for rows in groups.values():
+        ok = [r for r in rows if r["Z"] is not None and (r["n_bkg"] or 0) >= min_bkg]
+        if ok:
+            pick = max(ok, key=lambda r: r["Z"])
+            pick["wp_note"] = "max-Z, n_bkg>=%d" % min_bkg
+        else:
+            cand = [r for r in rows if r["n_bkg"] is not None]
+            if not cand:
+                continue
+            pick = max(cand, key=lambda r: r["n_bkg"])
+            pick["wp_note"] = "fallback: no FPR reached n_bkg>=%d, loosest used" % min_bkg
+            n_fallback += 1
+        chosen.append(pick)
+    chosen.sort(key=lambda r: (r["mpi"], r["mA"], r["ctau"], r["lxy_bin"]))
+    return chosen, n_fallback
+
+
+def _choose_wp_per_lxy_bin(records, min_bkg, agg):
+    agg_fn = {"median": np.median, "mean": np.mean, "sum": np.sum}[agg]
+    zs, thr = {}, {}
+    for r in records:
+        if r["threshold"] is None:
+            continue
+        key = (r["lxy_bin"], r["fpr"])
+        thr[key] = r["threshold"]
+        if r["Z"] is not None and (r["n_bkg"] or 0) >= min_bkg:
+            zs.setdefault(key, []).append(r["Z"])
+    best = {}
+    for (lb, fpr), z in zs.items():
+        score = float(agg_fn(z))
+        cur = best.get(lb)
+        if cur is None or score > cur["agg_Z"]:
+            best[lb] = {"lxy_bin": lb, "fpr": fpr, "threshold": thr[(lb, fpr)],
+                        "agg": agg, "agg_Z": score, "n_points": len(z)}
+    return [best[lb] for lb in sorted(best, key=_lxy_lo)]
+
+
+def choose_working_points(records, out_dir, min_bkg, agg, per_point):
+    n_fallback = 0
+    if per_point:
+        chosen, n_fallback = _choose_wp_per_point(records, min_bkg)
+        mode = "per (mpi,mA,ctau,lxy_bin)"
+    else:
+        chosen = _choose_wp_per_lxy_bin(records, min_bkg, agg)
+        mode = "per lxy bin (8-SR), agg=%s" % agg
+    out = Path(out_dir) / "working_points.json"
+    with open(out, "w") as fh:
+        json.dump(chosen, fh, indent=1)
+    print("Working points: mode %s, min_bkg %d -> %d WP(s)%s"
+          % (mode, min_bkg, len(chosen),
+             (", %d fallback(s)" % n_fallback) if per_point else ""))
+    if not per_point:
+        for c in chosen:
+            print("  %-12s fpr=%-9g thr=%.6f  %s Z=%.3f over %d points"
+                  % (c["lxy_bin"], c["fpr"], c["threshold"], agg, c["agg_Z"], c["n_points"]))
+    print("Wrote working points -> %s" % out)
+    return chosen
+
+
+if _args.choose_wp_only:
+    _sd = OUT_ROOT / "significance_data.json"
+    if not _sd.exists():
+        raise SystemExit("--choose-wp-only: %s not found (run the full scan first)" % _sd)
+    with open(_sd) as _fh:
+        _recs = json.load(_fh)
+    print("Read %d significance rows from %s" % (len(_recs), _sd))
+    choose_working_points(_recs, OUT_ROOT, _args.wp_min_bkg, _args.wp_agg, _args.wp_per_point)
+    raise SystemExit(0)
 print(f"FPR targets ({len(FPR_TARGETS)}): "  + ", ".join(f"{f:g}" for f in FPR_TARGETS))
 
 def _mass_window_halfwidth(mA):
@@ -888,6 +981,7 @@ if _args.significance:
         return cells
 
     # Main per-mass point loop (using all the functions above)
+    _sig_records = []
     for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
         keys = [(mpi_val, mA_val, c) for c in sorted(ctau_vals) if (mpi_val, mA_val, c) in SIG_NGEN]
         if not keys:
@@ -900,4 +994,21 @@ if _args.significance:
         for lxy_label in _bin_models:
             cbl = _compute_significance_cells(keys, lxy_only=lxy_label)
             _significance_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, lxy_label=lxy_label)
+            for f_t in fpr_targets:
+                _wp = _thr_at.get((f_t, lxy_label))
+                for k in keys:
+                    _p0, _Z, _S, _B, _ns, _nb = cbl[(f_t, k)]
+                    _sig_records.append({
+                        "mpi": k[0], "mA": k[1], "ctau": k[2], "lxy_bin": lxy_label,
+                        "fpr": f_t,
+                        "threshold": (_wp[0] if _wp else None),
+                        "fpr_achieved": (_wp[1] if _wp else None),
+                        "Z": (None if not np.isfinite(_Z) else _Z),
+                        "S": _S, "B": _B, "n_sig": _ns, "n_bkg": _nb,
+                    })
         _drop_key_slices()
+
+    with open(out_dir / "significance_data.json", "w") as _sf:
+        json.dump(_sig_records, _sf, indent=1)
+    print(f"Wrote significance data ({len(_sig_records)} rows) -> {out_dir / 'significance_data.json'}")
+    choose_working_points(_sig_records, out_dir, _args.wp_min_bkg, _args.wp_agg, _args.wp_per_point)
