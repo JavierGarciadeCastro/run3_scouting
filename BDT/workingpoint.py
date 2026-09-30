@@ -41,39 +41,46 @@ plt.rcParams.update({
 # Configuration
 # ---------------------------------------------------------------------------
 _parser = argparse.ArgumentParser(description="Working point analysis for the scouting BDT.")
+_parser.add_argument("--model", choices=["dqcd", "hahm"], default="dqcd",
+                     help="Signal model. 'dqcd' = GluGluHToDarkShowers ScenarioA/B1/B2/C, "
+                          "parametrised in (mpi, mA, ctau). 'hahm' = HTo2ZdTo2mu2x, "
+                          "parametrised in (mzd, ctau). Output goes to .../Scenario<S>/ or .../HAHM/.")
 _parser.add_argument("--scenario", choices=["A", "B1", "B2", "C"], default="A",
-                     help="DQCD signal scenario to train and evaluate on. Output goes to "
-                          "significance_plots[_L1req]/Scenario<S>/.")
-_parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau]",
+                     help="DQCD signal scenario to train and evaluate on (--model dqcd only). "
+                          "Output goes to significance_plots[_L1req]/Scenario<S>/.")
+_parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] | mzd[:ctau]",
                      help="Signal point(s) to exclude from training and evaluate on the test set "
-                          "only, e.g. --holdout 4:1.33 (all ctau) or --holdout 4:1.33:10.")
+                          "only, e.g. --holdout 4:1.33 (all ctau) or --holdout 4:1.33:10 for dqcd, "
+                          "--holdout 5 or --holdout 5:10 for hahm.")
 _parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
                      help="Train a parametric (conditional) BDT: one signal parameter (chosen "
                           "with --cond-var) is added as an input feature.")
-_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi"], default=["mratio"],
+_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi", "mzd"], default=None,
                      nargs="+",
                      help="Which signal parameter(s) the conditional BDT is parametrised in "
                           "(only used with --conditional). One or more of: 'ctau' the "
                           "lifetime [mm] (param_ctau); 'mratio' the mass ratio mA/mpi "
-                          "snapped to the nearest value of --mratio-grid (param_mratio); "
-                          "'mpi' the pi_3 mass [GeV] (param_mpi). All given features are "
+                          "snapped to the nearest value of --mratio-grid (param_mratio, dqcd only); "
+                          "'mpi' the pi_3 mass [GeV] (param_mpi, dqcd only); 'mzd' the Zd mass "
+                          "[GeV] (param_mzd, hahm only). All given features are "
                           "added to the BDT together. Output goes to <out-name>_cond<Tags>. "
-                          "Default: mratio.")
+                          "Default: mratio for dqcd, mzd for hahm.")
 _parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
                      help="Nominal mA/mpi values the signal points are snapped onto --cond-var mratio")
 _parser.add_argument("--train-max-events", type=int, default=15_000_000, metavar="N",
                      help="Cap the number of TRAINING events fed to XGBoost")
-_parser.add_argument("--sig-dir", default="tuples_priv_merged",
-                     help="Subdirectory holding the SIGNAL tuples. ")
+_parser.add_argument("--sig-dir", default=None,
+                     help="Subdirectory holding the SIGNAL tuples. Default: tuples_DQCD_Scenario<S> "
+                          "for dqcd, tuples_hahm for hahm.")
 _parser.add_argument("--out-name", default="significance_plots_priv",
                      help="Base output directory name under BDT/")
 _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                      help="Keep only events with passL1 != 0 (the L1-seed decision)")
 _parser.add_argument("--do-random-splitting", action=argparse.BooleanOptionalAction, default=False,
                      help="Use the random (stratified) train/test split instead of the evtn-based one")
-_parser.add_argument("--mass-point", default=None, metavar="mpi:mA",
+_parser.add_argument("--mass-point", default=None, metavar="mpi:mA | mzd",
                      help="Train only on this single signal mass point, all its ctau values "
-                          "included. E.g. --mass-point 4:1.33")
+                          "included. E.g. --mass-point 4:1.33 (dqcd) or --mass-point 5 (hahm)")
 _args = _parser.parse_args()
 
 # Convert the holdout strings into numbers
@@ -81,17 +88,19 @@ def _parse_holdout(specs):
     out = []
     for s in specs:
         parts = [float(p) for p in s.split(":")]
-        mpi, mA = parts[0], parts[1]
-        ctau = parts[2] if len(parts) == 3 else None
-        out.append((mpi, mA, ctau))
+        n = len(MASS_PARAMS)
+        out.append((tuple(parts[:n]), parts[n] if len(parts) > n else None))
     return out
 
 # Set all the necessary configurations
+MODEL                = _args.model
+MASS_PARAMS          = ("mpi", "mA") if MODEL == "dqcd" else ("mzd",)
 SCENARIO             = _args.scenario
+MODEL_TAG            = f"Scenario{SCENARIO}" if MODEL == "dqcd" else "HAHM"
 use_conditional      = _args.conditional
-COND_VAR             = list(_args.cond_var)   # e.g. ["mratio"] or ["ctau", "mratio"]
-_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi"}
-_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi"}
+COND_VAR             = list(_args.cond_var or (["mzd"] if MODEL == "hahm" else ["mratio"]))   # e.g. ["mratio"] or ["ctau", "mratio"]
+_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd"}
+_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi", "mzd": "Mzd"}
 COND_COL             = [_COND_COL_OF[v] for v in COND_VAR]   # BDT feature column(s) for the cond-var(s)
 COND_TAG             = ("_cond" + "".join(_COND_TAG_OF[v] for v in COND_VAR) if use_conditional else "")
 MRATIO_GRID          = np.array(sorted(set(_args.mratio_grid)), dtype=np.float64)
@@ -101,9 +110,9 @@ HOLD_TAG             = ("_holdout-" + "-".join(s.replace(":", "-").replace(".", 
 REQUIRE_L1           = _args.require_l1        # keep only passL1 != 0 events (sig + bkg)
 DO_RANDOM_SPLITTING  = _args.do_random_splitting  # True: random stratified split, False: evtn-based
 FINAL_MASS_POINT     = (tuple(float(x) for x in _args.mass_point.split(":"))
-                         if _args.mass_point else None)  # (mpi, mA) filter on the signal files
-SIG_SUBDIR           = _args.sig_dir
-MINBIAS_SUBDIR       = "tuples_refill_minbias"
+                         if _args.mass_point else None)  # (mpi, mA) or (mzd,) filter on the signal files
+SIG_SUBDIR           = _args.sig_dir or (f"tuples_DQCD_Scenario{SCENARIO}" if MODEL == "dqcd" else "tuples_hahm")
+MINBIAS_SUBDIR       = "tuples_minbias"
 TUPLES_SUBDIR        = SIG_SUBDIR
 _HERE      = Path(__file__).resolve().parent
 TUPLES_BASE    = Path("/ceph/cms/store/group/Run3Scouting")
@@ -114,7 +123,7 @@ MINBIAS_NGEN_BEFOREFILTER = 8.31e9
 MINBIAS_NGEN_AFTERFILTER = 409318867
 MINBIAS_XSEC_BEFOREFILTER = 1.051e7
 MINBIAS_XSEC = MINBIAS_XSEC_BEFOREFILTER * (MINBIAS_NGEN_AFTERFILTER / MINBIAS_NGEN_BEFOREFILTER)  # ~= 5.18e5 pb
-OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"Scenario{SCENARIO}{HOLD_TAG}")
+OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"{MODEL_TAG}{HOLD_TAG}")
 
 # Identify the mass ratio for each mass point
 def _mratio(mpi, mA):
@@ -127,13 +136,15 @@ def _holdout_mask(df):
     if not HOLDOUT:
         return m
     is_sig = (df['label'].values == 1)
-    mpi_a, mA_a, ctau_a = (df['param_mpi'].values, df['param_mA'].values, df['param_ctau'].values)
-    for mpi, mA, ctau in HOLDOUT:
-        sel = is_sig & np.isclose(mpi_a, mpi) & np.isclose(mA_a, mA)
+    ctau_a = df['param_ctau'].values
+    for masses, ctau in HOLDOUT:
+        sel = is_sig.copy()
+        for p, v in zip(MASS_PARAMS, masses):
+            sel &= np.isclose(df[f'param_{p}'].values, v)
         if ctau is not None:
             sel = sel & np.isclose(ctau_a, ctau)
         if not sel.any():
-            print(f"Holding out {mpi:g}:{mA:g}"
+            print(f"Holding out {':'.join(f'{v:g}' for v in masses)}"
                   f"{'' if ctau is None else f':{ctau:g}'} matched no signal events.")
         m |= sel
     return m
@@ -149,8 +160,12 @@ def split_by_evtn(evtn, holdout=None):
 def _p2f(s):
     return float(s.replace("p", "."))
 
-_SIG_GLOB = f"tuples_Signal_Scenario{SCENARIO}_*_2024_*.root"
-_SIG_RE = re.compile(rf"tuples_Signal_Scenario{SCENARIO}_(?:Par|Priv)_2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
+if MODEL == "dqcd":
+    _SIG_GLOB = f"tuples_Signal_Scenario{SCENARIO}_2024_*.root"
+    _SIG_RE = re.compile(rf"tuples_Signal_Scenario{SCENARIO}_2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
+else:
+    _SIG_GLOB = "tuples_Signal_HTo2ZdTo2mu2x_MZd-*_ctau-*mm_2024*.root"
+    _SIG_RE = re.compile(r"tuples_Signal_HTo2ZdTo2mu2x_MZd-(\w+)_ctau-(\w+)mm_2024(?:_2024)?(?:_\w+)?\.root")
 
 # Build signal file inventory (1 file per signal point)
 _sig_by_point = {}
@@ -158,19 +173,20 @@ for fpath in sorted(glob.glob(str(tuples_dir / _SIG_GLOB))):
     m = _SIG_RE.search(os.path.basename(fpath))
     if not m:
         continue
-    mpi_s, mA_s, ctau_s = m.groups()
-    key = (_p2f(mpi_s), _p2f(mA_s), _p2f(ctau_s))
+    key = tuple(_p2f(s) for s in m.groups())
     is_merged = bool(re.search(r"_2024\.root$", os.path.basename(fpath)))
     prev = _sig_by_point.get(key)
     if prev is None or (is_merged and not prev[1]):
         _sig_by_point[key] = (fpath, is_merged)
 
-sig_file_params = [(f, k[0], k[1], k[2]) for k, (f, _m) in sorted(_sig_by_point.items())]
+sig_file_params = [(f, k) for k, (f, _m) in sorted(_sig_by_point.items())]
 
 # If --mass-point was given, restrict training/scoring to that signal point (all ctau values)
 if FINAL_MASS_POINT is not None:
+    if len(FINAL_MASS_POINT) != len(MASS_PARAMS):
+        raise SystemExit(f"--mass-point needs {':'.join(MASS_PARAMS)} for --model {MODEL}")
     sig_file_params = [p for p in sig_file_params
-                        if np.isclose(p[1], FINAL_MASS_POINT[0]) and np.isclose(p[2], FINAL_MASS_POINT[1])]
+                        if all(np.isclose(a, b) for a, b in zip(p[1][:-1], FINAL_MASS_POINT))]
     if not sig_file_params:
         raise SystemExit(f"--mass-point {_args.mass_point} matched no signal point on disk")
 
@@ -262,12 +278,13 @@ def add_dxy_lxy(df):
 print("Building dataframe (10-15 minutes)")
 #Load all the signal into 1 dataframe
 sig_frames = []
-for fpath, mpi_val, mA_val, ctau_val in sig_file_params:
+for fpath, key in sig_file_params:
     df = apply_l1(read_flat(fpath), Path(fpath).name)
-    df['param_ctau']   = float(ctau_val)   # conditional BDT feature (--cond-var ctau)
-    df['param_mA']     = float(mA_val)
-    df['param_mpi']    = float(mpi_val)
-    df['param_mratio'] = _mratio(float(mpi_val), float(mA_val))   # (--cond-var mratio)
+    df['param_ctau']   = float(key[-1])   # conditional BDT feature (--cond-var ctau)
+    for p, v in zip(MASS_PARAMS, key[:-1]):
+        df[f'param_{p}'] = float(v)
+    if MODEL == "dqcd":
+        df['param_mratio'] = _mratio(key[0], key[1])   # (--cond-var mratio)
     df['label']        = 1
     sig_frames.append(df)
 df_sig = pd.concat(sig_frames, ignore_index=True)
@@ -342,7 +359,7 @@ if _hold.any():
         _tr_p, _te_p = split_by_evtn(df_global['evtn'].to_numpy()[_keep_i])   # positions within _keep_i
         _tr_i, _te_i = _keep_i[_tr_p], _keep_i[_te_p]
     _te_i = np.concatenate([_te_i, _hold_i])   # holdout signal -> test only
-    _hp = ', '.join(f"mpi={m:g} mA={a:g}" + ('' if c is None else f" ctau={c:g}mm") for m, a, c in HOLDOUT)
+    _hp = ', '.join(" ".join(f"{p}={v:g}" for p, v in zip(MASS_PARAMS, ms)) + ('' if c is None else f" ctau={c:g}mm") for ms, c in HOLDOUT)
 
 else:
     if DO_RANDOM_SPLITTING:
@@ -438,9 +455,12 @@ for lxy_label in lxy_labels:
         "tuples_subdir":   TUPLES_SUBDIR,
         "lxy_bin":         lxy_label,
         "lxy_range_cm":    [lxy_bins[_bin_idx], lxy_bins[_bin_idx + 1]],
-        "signal_mA":       sorted({float(p[2]) for p in sig_file_params}),
-        "signal_ctau_mm":  sorted({float(p[3]) for p in sig_file_params}),
-        "signal_mratio":   sorted({_mratio(float(p[1]), float(p[2])) for p in sig_file_params}),
+        **({"signal_mA":     sorted({float(k[1]) for _f, k in sig_file_params}),
+            "signal_mratio": sorted({_mratio(k[0], k[1]) for _f, k in sig_file_params})}
+           if MODEL == "dqcd" else
+           {"signal_mzd":    sorted({float(k[0]) for _f, k in sig_file_params})}),
+        "signal_ctau_mm":  sorted({float(k[-1]) for _f, k in sig_file_params}),
+        "model":           MODEL,
         "scenario":        SCENARIO,
         "feature_importance": _bin_fi,
         "xgboost_version": xgboost.__version__,

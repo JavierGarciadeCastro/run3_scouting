@@ -58,14 +58,17 @@ hep.style.use("CMS")
 # Configuration -- must match the training run being evaluated
 # ---------------------------------------------------------------------------
 _parser = argparse.ArgumentParser(description="Evaluate a trained scouting BDT on its test set (no retraining).")
+_parser.add_argument("--model", choices=["dqcd", "hahm"], default="dqcd",
+                     help="Must match the --model used for training.")
 _parser.add_argument("--scenario", choices=["A", "B1", "B2", "C"], default="A",
-                     help="Must match the --scenario used for training.")
-_parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau]",
+                     help="Must match the --scenario used for training (--model dqcd only).")
+_parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] | mzd[:ctau]",
                      help="Must match the --holdout used for training.")
 _parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --conditional used for training.")
-_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi"], default=["mratio"],
-                     nargs="+", help="Must match the --cond-var used for training.")
+_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi", "mzd"], default=None,
+                     nargs="+", help="Must match the --cond-var used for training "
+                                     "(default: mratio for dqcd, mzd for hahm).")
 _parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
                      help="Must match the --mratio-grid used for training.")
 _parser.add_argument("--significance", action=argparse.BooleanOptionalAction, default=True,
@@ -77,8 +80,9 @@ _parser.add_argument("--fpr-scan", type=float, nargs=3, default=None, metavar=("
 _parser.add_argument("--mass-window-rel", type=float, default=0.1,
                      help="SV1 dimuon mass window half-width as a fraction r of mA for the yields. "
                           "Set to 0 to disable (full mass range).")
-_parser.add_argument("--sig-dir", default="tuples_DQCD_ScenarioA",
-                     help="Must match the --sig-dir used for training.")
+_parser.add_argument("--sig-dir", default=None,
+                     help="Must match the --sig-dir used for training. Default: "
+                          "tuples_DQCD_Scenario<S> for dqcd, tuples_hahm for hahm.")
 _parser.add_argument("--out-name", default="significance_plots_priv",
                      help="Base output directory of the TRAINING run (models are read from "
                           "<out-name>.../models/binned_lxy/). Eval plots are written under "
@@ -95,10 +99,10 @@ _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, defa
                      help="Must match the --require-l1 used for training.")
 _parser.add_argument("--do-random-splitting", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --do-random-splitting used for training.")
-_parser.add_argument("--mass-point", default=None, metavar="mpi:mA",
+_parser.add_argument("--mass-point", default=None, metavar="mpi:mA | mzd",
                      help="Must match the --mass-point used for training (data-loading filter). "
                           "Leave unset if training did not use --mass-point.")
-_parser.add_argument("--plot-only", default=None, metavar="mpi:mA",
+_parser.add_argument("--plot-only", default=None, metavar="mpi:mA | mzd",
                      help="Optional: restrict the final plots (discriminant/significance/limit) "
                           "to this single signal mass point. Does NOT affect data loading or the "
                           "train/test split -- safe to use even for a model trained on many points.")
@@ -117,16 +121,19 @@ def _parse_holdout(specs):
     out = []
     for s in specs:
         parts = [float(p) for p in s.split(":")]
-        mpi, mA = parts[0], parts[1]
-        ctau = parts[2] if len(parts) == 3 else None
-        out.append((mpi, mA, ctau))
+        n = len(MASS_PARAMS)
+        out.append((tuple(parts[:n]), parts[n] if len(parts) > n else None))
     return out
 
+MODEL                = _args.model
+MASS_PARAMS          = ("mpi", "mA") if MODEL == "dqcd" else ("mzd",)
+MASS_WINDOW_IDX      = MASS_PARAMS.index("mA" if MODEL == "dqcd" else "mzd")
 SCENARIO             = _args.scenario
+MODEL_TAG            = f"Scenario{SCENARIO}" if MODEL == "dqcd" else "HAHM"
 use_conditional      = _args.conditional
-COND_VAR             = list(_args.cond_var)
-_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi"}
-_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi"}
+COND_VAR             = list(_args.cond_var or (["mzd"] if MODEL == "hahm" else ["mratio"]))
+_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd"}
+_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi", "mzd": "Mzd"}
 COND_COL             = [_COND_COL_OF[v] for v in COND_VAR]
 COND_TAG             = ("_cond" + "".join(_COND_TAG_OF[v] for v in COND_VAR) if use_conditional else "")
 MRATIO_GRID          = np.array(sorted(set(_args.mratio_grid)), dtype=np.float64)
@@ -145,7 +152,7 @@ FINAL_MASS_POINT     = (tuple(float(x) for x in _args.mass_point.split(":"))
                          if _args.mass_point else None)
 PLOT_ONLY            = (tuple(float(x) for x in _args.plot_only.split(":"))
                          if _args.plot_only else None)
-SIG_SUBDIR           = _args.sig_dir
+SIG_SUBDIR           = _args.sig_dir or (f"tuples_DQCD_Scenario{SCENARIO}" if MODEL == "dqcd" else "tuples_hahm")
 MINBIAS_SUBDIR       = "tuples_minbias"
 TUPLES_SUBDIR        = SIG_SUBDIR
 LUMI_FB = 109.95
@@ -159,20 +166,26 @@ MINBIAS_NGEN_BEFOREFILTER = 8.31e9
 MINBIAS_NGEN_AFTERFILTER = 409318867
 MINBIAS_XSEC_BEFOREFILTER = 1.051e7
 MINBIAS_XSEC = MINBIAS_XSEC_BEFOREFILTER * (MINBIAS_NGEN_AFTERFILTER / MINBIAS_NGEN_BEFOREFILTER)
-# Directory workingpoint.py trained into -- this is where we READ models from. Either given
-# explicitly (--model-dir) or reconstructed the same way workingpoint.py builds OUT_ROOT.
+
 if _args.model_dir is not None:
     OUT_ROOT = Path(_args.model_dir).resolve()
 else:
-    OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"Scenario{SCENARIO}{HOLD_TAG}")
+    OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"{MODEL_TAG}{HOLD_TAG}")
 _BINMODEL_DIR = OUT_ROOT / "models" / "binned_lxy"
-# New plots go in a subdirectory so we never overwrite the training run's own outputs.
-EVAL_ROOT = OUT_ROOT / "eval_testonly"
 if not _BINMODEL_DIR.is_dir():
     raise SystemExit(f"No trained models found at {_BINMODEL_DIR} -- check --model-dir (or "
                       f"--out-name/--scenario/--conditional/--cond-var/--require-l1/--holdout) "
                       f"matches the training run.")
 print(f"Reading trained models from {_BINMODEL_DIR}")
+_train_manifests = sorted(_BINMODEL_DIR.glob("*_manifest.json"))
+with open(_train_manifests[0]) as _mf:
+    _train_man = json.load(_mf)
+TRAIN_MODEL_TAG = ("HAHM" if _train_man.get("model", "dqcd") == "hahm"
+                   else f"Scenario{_train_man.get('scenario', 'A')}")
+
+EVAL_ROOT = OUT_ROOT / ("eval_testonly" if TRAIN_MODEL_TAG == MODEL_TAG else f"eval_testonly_on{MODEL_TAG}")
+if TRAIN_MODEL_TAG != MODEL_TAG:
+    print(f"Models trained on {TRAIN_MODEL_TAG}, evaluated on {MODEL_TAG} signal -> {EVAL_ROOT}")
 if ADAPTIVE_FPR:
     print("FPR targets: adaptive (no --fpr-targets/--fpr-scan given) -- each (mass point, lxy "
           "bin) picks its own 4 targets from its own background yield in the mass window; no "
@@ -187,8 +200,9 @@ def _mratio(mpi, mA):
     return float(MRATIO_GRID[np.argmin(np.abs(MRATIO_GRID - mA / mpi))])
 
 def _theta_of(key):
-    mpi, mA, ctau = key[0], key[1], key[2]
-    _val_of = {"ctau": ctau, "mratio": _mratio(mpi, mA), "mpi": mpi}
+    _val_of = {"ctau": key[-1], **dict(zip(MASS_PARAMS, key[:-1]))}
+    if MODEL == "dqcd":
+        _val_of["mratio"] = _mratio(key[0], key[1])
     return tuple(_val_of[v] for v in COND_VAR)
 
 def _wp_from_roc(fpr_arr, thr_arr, target):
@@ -205,9 +219,11 @@ def _holdout_mask(df):
     if not HOLDOUT:
         return m
     is_sig = (df['label'].values == 1)
-    mpi_a, mA_a, ctau_a = (df['param_mpi'].values, df['param_mA'].values, df['param_ctau'].values)
-    for mpi, mA, ctau in HOLDOUT:
-        sel = is_sig & np.isclose(mpi_a, mpi) & np.isclose(mA_a, mA)
+    ctau_a = df['param_ctau'].values
+    for masses, ctau in HOLDOUT:
+        sel = is_sig.copy()
+        for p, v in zip(MASS_PARAMS, masses):
+            sel &= np.isclose(df[f'param_{p}'].values, v)
         if ctau is not None:
             sel = sel & np.isclose(ctau_a, ctau)
         m |= sel
@@ -227,37 +243,58 @@ def _p2f(s):
 def _flabel(f):
     return f"{f:g}".replace(".", "p")
 
-_SIG_GLOB = f"tuples_Signal_Scenario{SCENARIO}_*2024_*.root"
-_SIG_RE = re.compile(rf"tuples_Signal_Scenario{SCENARIO}_(?:(?:Par|Priv)_)?2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
+def _mass_tag(masses):
+    return "_".join(f"{p}{_flabel(v)}" for p, v in zip(MASS_PARAMS, masses))
+
+def _mass_str(masses):
+    return " ".join(f"{p}={v:g}" for p, v in zip(MASS_PARAMS, masses))
+
+def _mass_title(masses):
+    if MODEL == "dqcd":
+        return rf"$m_{{\pi_3}} = {masses[0]:g}$ GeV, $m_{{A'}} = {masses[1]:g}$ GeV"
+    return rf"$m_{{Z_d}} = {masses[0]:g}$ GeV"
+
+def _model_txt(masses):
+    if MODEL == "dqcd":
+        return [rf'Scenario {SCENARIO}', rf'$m_{{\pi_3}} = {masses[0]:g}$ GeV', rf"$m_{{A'}} = {masses[1]:g}$ GeV"]
+    return [r'HAHM $H\to Z_d Z_d$', rf'$m_{{Z_d}} = {masses[0]:g}$ GeV']
+
+if MODEL == "dqcd":
+    _SIG_GLOB = f"tuples_Signal_Scenario{SCENARIO}_2024_*.root"
+    _SIG_RE = re.compile(rf"tuples_Signal_Scenario{SCENARIO}_2024_mpi-(\w+)_mA-(\w+)_ctau-(\w+)mm_2024(?:_\w+)?\.root")
+else:
+    _SIG_GLOB = "tuples_Signal_HTo2ZdTo2mu2x_MZd-*_ctau-*mm_2024*.root"
+    _SIG_RE = re.compile(r"tuples_Signal_HTo2ZdTo2mu2x_MZd-(\w+)_ctau-(\w+)mm_2024(?:_2024)?(?:_\w+)?\.root")
 
 _sig_by_point = {}
 for fpath in sorted(glob.glob(str(tuples_dir / _SIG_GLOB))):
     m = _SIG_RE.search(os.path.basename(fpath))
     if not m:
         continue
-    mpi_s, mA_s, ctau_s = m.groups()
-    key = (_p2f(mpi_s), _p2f(mA_s), _p2f(ctau_s))
+    key = tuple(_p2f(s) for s in m.groups())
     is_merged = bool(re.search(r"_2024\.root$", os.path.basename(fpath)))
     prev = _sig_by_point.get(key)
     if prev is None or (is_merged and not prev[1]):
         _sig_by_point[key] = (fpath, is_merged)
 
-sig_file_params = [(f, k[0], k[1], k[2]) for k, (f, _m) in sorted(_sig_by_point.items())]
+sig_file_params = [(f, k) for k, (f, _m) in sorted(_sig_by_point.items())]
 if not sig_file_params:
     raise SystemExit(f"No signal files matching {_SIG_GLOB} / {_SIG_RE.pattern} in {tuples_dir}")
 
 if FINAL_MASS_POINT is not None:
+    if len(FINAL_MASS_POINT) != len(MASS_PARAMS):
+        raise SystemExit(f"--mass-point needs {':'.join(MASS_PARAMS)} for --model {MODEL}")
     sig_file_params = [p for p in sig_file_params
-                        if np.isclose(p[1], FINAL_MASS_POINT[0]) and np.isclose(p[2], FINAL_MASS_POINT[1])]
+                        if all(np.isclose(a, b) for a, b in zip(p[1][:-1], FINAL_MASS_POINT))]
     if not sig_file_params:
         raise SystemExit(f"--mass-point {_args.mass_point} matched no signal point on disk")
 
-param_grid = [(p[3], p[2], p[1]) for p in sig_file_params]
+sig_keys = [k for _f, k in sig_file_params]
 
 with open(_HERE / "sig_ngen_cache.json") as fh:
     _ngen_by_file = json.load(fh)
 
-# Cache is keyed by the old Par/Priv file names: fall back to a (mpi, mA, ctau) lookup
+# Cache is keyed by file name: fall back to a signal-point lookup
 _ngen_by_point = {}
 for _fname, _n in _ngen_by_file.items():
     _m = _SIG_RE.search(_fname)
@@ -265,16 +302,16 @@ for _fname, _n in _ngen_by_file.items():
         _ngen_by_point.setdefault(tuple(_p2f(s) for s in _m.groups()), set()).add(_n)
 
 SIG_NGEN = {}
-for fpath, mpi_val, mA_val, ctau_val in sig_file_params:
+for fpath, key in sig_file_params:
     n = _ngen_by_file.get(os.path.basename(fpath))
     if n is None:
-        _cands = _ngen_by_point.get((mpi_val, mA_val, ctau_val), set())
+        _cands = _ngen_by_point.get(key, set())
         if len(_cands) != 1:
             print(f"{'ambiguous' if _cands else 'no'} N_gen for {os.path.basename(fpath)} "
                   f"{sorted(_cands) if _cands else ''} -- EXCLUDED from the yield table")
             continue
         n = next(iter(_cands))
-    SIG_NGEN[(mpi_val, mA_val, ctau_val)] = n
+    SIG_NGEN[key] = n
 
 # ----------------------------------------
 # BDT variables (must match workingpoint.py exactly)
@@ -352,12 +389,13 @@ def add_dxy_lxy(df):
 
 print("Building dataframe (10-15 minutes) -- must reproduce training's df_global exactly")
 sig_frames = []
-for fpath, mpi_val, mA_val, ctau_val in sig_file_params:
+for fpath, key in sig_file_params:
     df = apply_l1(read_flat(fpath), Path(fpath).name)
-    df['param_ctau']   = float(ctau_val)
-    df['param_mA']     = float(mA_val)
-    df['param_mpi']    = float(mpi_val)
-    df['param_mratio'] = _mratio(float(mpi_val), float(mA_val))
+    df['param_ctau']   = float(key[-1])
+    for p, v in zip(MASS_PARAMS, key[:-1]):
+        df[f'param_{p}'] = float(v)
+    if MODEL == "dqcd":
+        df['param_mratio'] = _mratio(key[0], key[1])
     df['label']        = 1
     sig_frames.append(df)
 df_sig = pd.concat(sig_frames, ignore_index=True)
@@ -390,8 +428,9 @@ os.makedirs(EVAL_ROOT, exist_ok=True)
 _roc_lxy_dir = EVAL_ROOT / "ROC_by_lxy"
 os.makedirs(_roc_lxy_dir, exist_ok=True)
 
-def _mp_dir(mpi_val, mA_val, lxy_label=None):
-    d = EVAL_ROOT / f'mpi{_flabel(mpi_val)}' / f'mA_{_flabel(mA_val)}'
+def _mp_dir(masses, lxy_label=None):
+    d = (EVAL_ROOT / f'mpi{_flabel(masses[0])}' / f'mA_{_flabel(masses[1])}' if MODEL == "dqcd"
+         else EVAL_ROOT / f'mzd{_flabel(masses[0])}')
     if lxy_label is not None:
         d = d / f'lxy_{lxy_label}'
     os.makedirs(d, exist_ok=True)
@@ -553,21 +592,21 @@ del _lxy_ser
 # that landed in test (needed below to correctly rescale efficiency, since
 # SIG_NGEN counts ALL generated events, not just the test-set slice of them).
 _sig_i_all = np.flatnonzero(_LABEL_A == 1)
-_MPI_S = df_global['param_mpi'].to_numpy()[_sig_i_all]
-_MA_S  = df_global['param_mA'].to_numpy()[_sig_i_all]
-_CT_S  = _CTAU_A[_sig_i_all]
+_PAR_S = [df_global[f'param_{p}'].to_numpy()[_sig_i_all] for p in MASS_PARAMS] + [_CTAU_A[_sig_i_all]]
 _EMPTY_I = np.empty(0, dtype=np.int64)
 _SIG_ROWS = {}
 SIG_TEST_FRAC = {}
-for _ct, _ma, _mp in param_grid:
-    _k = (_mp, _ma, _ct)
+for _k in sig_keys:
     if _k in _SIG_ROWS:
         continue
-    _rows_all  = _sig_i_all[(_MPI_S == _k[0]) & (_MA_S == _k[1]) & (_CT_S == _k[2])]
+    _sel = np.ones(len(_sig_i_all), dtype=bool)
+    for _a, _v in zip(_PAR_S, _k):
+        _sel &= (_a == _v)
+    _rows_all  = _sig_i_all[_sel]
     _rows_test = _rows_all[_IS_TEST[_rows_all]]
     _SIG_ROWS[_k]      = _rows_test
     SIG_TEST_FRAC[_k]  = (len(_rows_test) / len(_rows_all)) if len(_rows_all) else 0.0
-del _MPI_S, _MA_S, _CT_S, _sig_i_all
+del _PAR_S, _sig_i_all
 
 # Background rows, TEST-ONLY, plus the global test fraction (used to rescale
 # MINBIAS_NGEN_AFTERFILTER, which likewise counts ALL generated events).
@@ -651,7 +690,7 @@ def _signal_mass_window(key):
         return None
     if key in _MASS_WINDOW_CACHE:
         return _MASS_WINDOW_CACHE[key]
-    mA   = key[1]
+    mA   = key[MASS_WINDOW_IDX]
     half = _mass_window_halfwidth(mA)
     win  = (mA - half, mA + half)
     _MASS_WINDOW_CACHE[key] = (win, mA, half)
@@ -692,9 +731,9 @@ def _drop_key_slices():
     _SIG_SLICES.clear()
     _BKG_SLICES.clear()
 
-mpi_mA_groups = {}
-for ctau_val, mA_val, mpi_val in param_grid:
-    mpi_mA_groups.setdefault((mpi_val, mA_val), []).append(ctau_val)
+mass_groups = {}
+for _k in sig_keys:
+    mass_groups.setdefault(_k[:-1], []).append(_k[-1])
 
 ########################
 ###### PLOTTING ########
@@ -706,7 +745,7 @@ BKG_EDGE    = "#2f5f5d"
 disc_bins   = np.linspace(0.0, 1.0, 51)
 disc_widths = np.diff(disc_bins)
 def _theta_tex(theta):
-    _tex = {"ctau": r"c\tau", "mratio": r"m_{A'}/m_{\pi_3}", "mpi": r"m_{\pi_3}"}
+    _tex = {"ctau": r"c\tau", "mratio": r"m_{A'}/m_{\pi_3}", "mpi": r"m_{\pi_3}", "mzd": r"m_{Z_d}"}
     return ", ".join(rf"${_tex[v]}={t:g}$" for v, t in zip(COND_VAR, theta))
 
 for lxy_label, roc_t in _bin_roc_test.items():
@@ -731,10 +770,10 @@ for lxy_label, roc_t in _bin_roc_test.items():
     plt.close(fig)
 
 _bkg_disc_by_bin = None if use_conditional else _split_by_bin(_BKG_ROWS)
-for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
-    _disc_sig = {c: _split_by_bin(_SIG_ROWS.get((float(mpi_val), float(mA_val), float(c)), _EMPTY_I)) for c in ctau_vals}
+for masses, ctau_vals in sorted(mass_groups.items()):
+    _disc_sig = {c: _split_by_bin(_SIG_ROWS.get((*masses, float(c)), _EMPTY_I)) for c in ctau_vals}
     if use_conditional:
-        _thetas_mp = {c: _theta_of((float(mpi_val), float(mA_val), float(c))) for c in ctau_vals}
+        _thetas_mp = {c: _theta_of((*masses, float(c))) for c in ctau_vals}
         _bkg_disc_th = {th: _split_by_bin(_BKG_ROWS, _bkg_scores(th)) for th in set(_thetas_mp.values())}
     for lxy_label in _bin_models:
         fig, ax = plt.subplots(figsize=(7.2, 5.6))
@@ -773,11 +812,11 @@ for (mpi_val, mA_val), ctau_vals in sorted(mpi_mA_groups.items()):
         ax.set_xlabel('BDT score')
         ax.set_ylabel('a.u.')
         ax.set_xlim(0.0, 1.0)
-        ax.set_title(rf"$m_{{\pi_3}} = {mpi_val:g}$ GeV, $m_{{A'}} = {mA_val:g}$ GeV")
+        ax.set_title(_mass_title(masses))
         ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=14, fontstyle="italic", fontweight="bold", va="top", ha="left")
         ax.legend(loc='upper center', fontsize=12, framealpha=0.9)
         ax.tick_params(direction="in", top=True, right=True, which="both")
-        _fout = (_mp_dir(mpi_val, mA_val, lxy_label) / f'Disc_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}_lxy_{lxy_label}.png')
+        _fout = (_mp_dir(masses, lxy_label) / f'Disc_{_mass_tag(masses)}_lxy_{lxy_label}.png')
         fig.savefig(_fout, dpi=150, bbox_inches='tight')
         plt.close(fig)
 del _bkg_disc_by_bin
@@ -829,14 +868,14 @@ def _sig_s_at(key, t, lxy_label):
 # ---------------------------------------------------------------------------
 _BKG_LXY_CODE = _LXY_CODE[_BKG_ROWS]
 
-def _bkg_count_in_window(mA_val, lxy_label):
+def _bkg_count_in_window(m_win, lxy_label):
     code = _CODE_OF.get(lxy_label)
     if code is None:
         return 0
     mask = (_BKG_LXY_CODE == code)
     if MASS_WINDOW_ACTIVE:
-        half = _mass_window_halfwidth(mA_val)
-        mask &= (_BKG_MASS >= mA_val - half) & (_BKG_MASS <= mA_val + half)
+        half = _mass_window_halfwidth(m_win)
+        mask &= (_BKG_MASS >= m_win - half) & (_BKG_MASS <= m_win + half)
     return int(np.count_nonzero(mask))
 
 def _bkg_yield_in_window(n_raw):
@@ -919,10 +958,9 @@ if _args.significance:
 
     def _get_asymptotic_limit(bins_sb, key, f_t, lxy_label=None, lumi_unc=1.10, workdir=str(EVAL_ROOT),
                                card_tag=None):
-        mpi_val, mA_val, ctau_val = key
         bin_tag = lxy_label if lxy_label is not None else "combined"
         fpr_tag = card_tag if card_tag is not None else f"FPR{_flabel(f_t)}"
-        card_name = (f"datacard_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}_ctau{_flabel(ctau_val)}"
+        card_name = (f"datacard_{_mass_tag(key[:-1])}_ctau{_flabel(key[-1])}"
                      f"_{fpr_tag}_{bin_tag}.txt")
         card = os.path.join(_CARDS_DIR, card_name)
         tag = uuid.uuid4().hex[:8]  # only used to keep combine's own output files unique
@@ -963,7 +1001,7 @@ if _args.significance:
         return {m.group(1) + "%": float(m.group(2))
                 for m in re.finditer(r"Expected\s+([\d.]+)%.*?r\s*<\s*([\d.]+)", out)}
 
-    def _significance_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val, fpr_rows, lxy_label=None):
+    def _significance_vs_ctau_plot(cells, keys, ctaus, masses, fpr_rows, lxy_label=None):
         if not ctaus:
             return
         order = np.argsort(np.array(ctaus, dtype=float))
@@ -999,7 +1037,7 @@ if _args.significance:
         _head  = 1.45 + (0.10 if _MANY_FPR else 0.15) * max(0, _nrows - 1)
         ax.set_ylim(0.0, z_max * _head if z_max > 0 else 1.0)
         ax.text(1.0, 1.01, rf'{LUMI_FB:g} fb$^{{-1}}$ (13.6 TeV, 2024)', transform=ax.transAxes, ha='right', va='bottom', fontsize=15)
-        txt = [rf'Scenario {SCENARIO}', rf'$m_{{\pi_3}} = {mpi_val:g}$ GeV', rf"$m_{{A'}} = {mA_val:g}$ GeV"]
+        txt = _model_txt(masses)
         res = _signal_mass_window(keys[0])
         if res is not None:
             (lo, hi), _c, _h = res
@@ -1016,7 +1054,7 @@ if _args.significance:
         ax.add_artist(leg1)
         ax.tick_params(direction='in', top=True, right=True, which='both')
         fig.tight_layout()
-        _fout = _mp_dir(mpi_val, mA_val, lxy_label) / f'significance_vs_ctau_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        _fout = _mp_dir(masses, lxy_label) / f'significance_vs_ctau_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
         plt.close(fig)
 
@@ -1036,7 +1074,7 @@ if _args.significance:
                 best_r, best_f = r, f_t
         return best_f
 
-    def _limit_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val, fpr_rows, lxy_label=None):
+    def _limit_vs_ctau_plot(cells, keys, ctaus, masses, fpr_rows, lxy_label=None):
         if not ctaus:
             return
         order = np.argsort(np.array(ctaus, dtype=float))
@@ -1047,7 +1085,7 @@ if _args.significance:
         for f_t, _f_ach, _thr in fpr_rows:
             for k in keys:
                 r = _expected_limit(cells[(f_t, k)])
-                print(f"[limit] mpi={mpi_val:g} mA={mA_val:g} ctau={k[2]:g}mm "
+                print(f"[limit] {_mass_str(masses)} ctau={k[-1]:g}mm "
                       f"lxy={_bin_tag} FPR={f_t:g}: expected 95% CL limit r < {r:.4g}")
 
         # Total background in the mass window BEFORE any working-point cut (per key: the
@@ -1100,7 +1138,7 @@ if _args.significance:
         else:
             ax.set_ylim(1e-3, 1.0)
         ax.text(1.0, 1.01, rf'{LUMI_FB:g} fb$^{{-1}}$ (13.6 TeV, 2024)', transform=ax.transAxes, ha='right', va='bottom', fontsize=15)
-        txt = [rf'Scenario {SCENARIO}', rf'$m_{{\pi_3}} = {mpi_val:g}$ GeV', rf"$m_{{A'}} = {mA_val:g}$ GeV"]
+        txt = _model_txt(masses)
         res = _signal_mass_window(keys[0])
         if res is not None:
             (lo, hi), _c, _h = res
@@ -1120,11 +1158,11 @@ if _args.significance:
         ax.add_artist(leg1)
         ax.tick_params(direction='in', top=True, right=True, which='both')
         fig.tight_layout()
-        _fout = _mp_dir(mpi_val, mA_val, lxy_label) / f'limit_vs_ctau_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        _fout = _mp_dir(masses, lxy_label) / f'limit_vs_ctau_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
         plt.close(fig)
 
-    def _bkg_mass_window_plot(mpi_val, mA_val, lxy_label, fpr_rows, thr_at, window_key):
+    def _bkg_mass_window_plot(masses, lxy_label, fpr_rows, thr_at, window_key):
         """Background SV1 invariant-mass shape (test set) in the signal's mass window,
         normalized to unit area: no cut at all vs. after each FPR working-point cut
         (using the same per-bin thresholds as the limit/significance plots)."""
@@ -1178,16 +1216,16 @@ if _args.significance:
         _h_pos = np.concatenate(_h_pos)
         if len(_h_pos):
             ax.set_ylim(_h_pos.min() * 0.5, _h_pos.max() * 50)   # headroom for the legend
-        ax.set_title(rf"$m_{{\pi_3}} = {mpi_val:g}$ GeV, $m_{{A'}} = {mA_val:g}$ GeV")
+        ax.set_title(_mass_title(masses))
         ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=14, fontstyle="italic", fontweight="bold", va="top", ha="left")
         ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
         ax.tick_params(direction='in', top=True, right=True, which='both')
         fig.tight_layout()
-        _fout = _mp_dir(mpi_val, mA_val, lxy_label) / f'bkg_mass_window_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        _fout = _mp_dir(masses, lxy_label) / f'bkg_mass_window_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
         plt.close(fig)
 
-    def _best_fpr_heatmap(best_map, lxy_order, ctaus, mpi_val, mA_val):
+    def _best_fpr_heatmap(best_map, lxy_order, ctaus, masses):
         """2D map (lxy bin x ctau) of the FPR that gives the best (lowest) expected limit
         in each cell, for one signal mass point. best_map: {(lxy_label, ctau): best_f_t}."""
         ctaus_sorted = sorted(set(ctaus), key=float)
@@ -1221,9 +1259,9 @@ if _args.significance:
                 ax.text(ix, iy, txt, ha='center', va='center', fontsize=11, color=color)
         cb = fig.colorbar(im, ax=ax)
         cb.set_label(r'Best FPR ($\log_{10}$ scale)')
-        ax.set_title(rf"$m_{{\pi_3}} = {mpi_val:g}$ GeV, $m_{{A'}} = {mA_val:g}$ GeV")
+        ax.set_title(_mass_title(masses))
         ax.text(0.02, 1.03, "Preliminary", transform=ax.transAxes, fontsize=13, fontstyle="italic", fontweight="bold", va="bottom", ha="left")
-        _fout = _mp_dir(mpi_val, mA_val) / f'best_fpr_heatmap_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        _fout = _mp_dir(masses) / f'best_fpr_heatmap_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
         plt.close(fig)
 
@@ -1291,11 +1329,11 @@ if _args.significance:
         limit_dict = _get_asymptotic_limit(bins_sb, key=k, f_t=0.0, lxy_label="combined", card_tag=card_tag)
         return float(limit_dict.get("50.0%", float('nan'))), used
 
-    def _best_fpr_strategy_plot(mpi_val, mA_val, keys, majority_r, perlifetime_r,
+    def _best_fpr_strategy_plot(masses, keys, majority_r, perlifetime_r,
                                  fixed_cells=None, fpr_rows=None):
         """Limit vs ctau comparing the two best-FPR-per-bin re-combine strategies (and, in
         fixed-grid mode, the individual shared-FPR curves already in fixed_cells) on one plot."""
-        ctaus = [k[2] for k in keys]
+        ctaus = [k[-1] for k in keys]
         if not ctaus:
             return
         order = np.argsort(np.array(ctaus, dtype=float))
@@ -1326,7 +1364,7 @@ if _args.significance:
         for r_by_ctau, label, color, marker in (
                 (majority_r, 'Majority-vote FPR per bin', '#1f77b4', 's'),
                 (perlifetime_r, 'Per-lifetime best FPR per bin', '#d62728', 'o')):
-            r = np.array([r_by_ctau.get(k[2], float('nan')) for k in keys], dtype=float)[order]
+            r = np.array([r_by_ctau.get(k[-1], float('nan')) for k in keys], dtype=float)[order]
             _track(r)
             ax.plot(x, r, color=color, marker=marker, markersize=7, linewidth=1.9, zorder=4, label=label)
 
@@ -1340,12 +1378,12 @@ if _args.significance:
             ax.set_ylim(1e-3, 1.0)
         ax.text(1.0, 1.01, rf'{LUMI_FB:g} fb$^{{-1}}$ (13.6 TeV, 2024)', transform=ax.transAxes,
                 ha='right', va='bottom', fontsize=15)
-        txt = [rf'Scenario {SCENARIO}', rf'$m_{{\pi_3}} = {mpi_val:g}$ GeV', rf"$m_{{A'}} = {mA_val:g}$ GeV"]
+        txt = _model_txt(masses)
         ax.text(0.04, 0.96, '\n'.join(txt), transform=ax.transAxes, va='top', ha='left', fontsize=14)
         ax.legend(loc='upper right', fontsize=12, framealpha=0.9)
         ax.tick_params(direction='in', top=True, right=True, which='both')
         fig.tight_layout()
-        _fout = _mp_dir(mpi_val, mA_val) / f'best_fpr_strategy_limit_vs_ctau_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.png'
+        _fout = _mp_dir(masses) / f'best_fpr_strategy_limit_vs_ctau_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
         plt.close(fig)
 
@@ -1363,13 +1401,13 @@ if _args.significance:
             vote[lxy_label] = (winners[0], counts)
         return vote
 
-    _final_groups = mpi_mA_groups
+    _final_groups = mass_groups
     if PLOT_ONLY is not None:
-        _final_groups = {k: v for k, v in mpi_mA_groups.items()
-                          if np.isclose(k[0], PLOT_ONLY[0]) and np.isclose(k[1], PLOT_ONLY[1])}
+        _final_groups = {k: v for k, v in mass_groups.items()
+                          if len(k) == len(PLOT_ONLY) and all(np.isclose(a, b) for a, b in zip(k, PLOT_ONLY))}
         if not _final_groups:
             print(f"--plot-only {_args.plot_only} matched no signal point; "
-                  f"available: {sorted(mpi_mA_groups)}")
+                  f"available: {sorted(mass_groups)}")
 
     # Majority-vote working points, machine-readable, for a downstream analysis to apply:
     # for mass point (mpi, mA) and lxy bin, keep events with
@@ -1384,12 +1422,13 @@ if _args.significance:
         except (OSError, json.JSONDecodeError):
             _wp_out = {}
     _wp_out.update({
-        "description": "Majority-vote BDT working point per (mpi, mA) and lxy bin. Cut: "
+        "description": f"Majority-vote BDT working point per ({', '.join(MASS_PARAMS)}) and lxy bin. Cut: "
                        "score > threshold, score = predict_proba(model)[:, 1] with 'features' as "
                        "input; events in lxy bin (lo, hi] of SV1_lxy [cm] (first bin includes lo) "
                        "and SV1_mass in mass_window [GeV]. Conditional BDT: set the cond_vars "
                        "features of EVERY event (signal and background) to cond_theta[ctau] and "
                        "cut at threshold_by_ctau[ctau].",
+        "model": MODEL,
         "scenario": SCENARIO,
         "model_dir": str(_BINMODEL_DIR),
         "features": list(_cols),
@@ -1402,61 +1441,61 @@ if _args.significance:
     })
     _wp_out.setdefault("mass_points", {})
 
-    for (mpi_val, mA_val), ctau_vals in sorted(_final_groups.items()):
-        keys = [(mpi_val, mA_val, c) for c in sorted(ctau_vals) if (mpi_val, mA_val, c) in SIG_NGEN]
+    for masses, ctau_vals in sorted(_final_groups.items()):
+        keys = [(*masses, c) for c in sorted(ctau_vals) if (*masses, c) in SIG_NGEN]
         if not keys:
             continue
 
-        ctaus = [k[2] for k in keys]
+        ctaus = [k[-1] for k in keys]
         best_fpr_map = {}  # (lxy_label, ctau) -> f_t giving the lowest expected limit
 
         if not ADAPTIVE_FPR:
             # Fixed FPR grid, shared across all lxy bins -> a combined (all-lxy) point makes
             # sense, since every bin is being cut at the same nominal FPR.
             cells = _compute_significance_cells(keys, _thr_at, fpr_rows)
-            _significance_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val, fpr_rows)
-            _limit_vs_ctau_plot(cells, keys, ctaus, mpi_val, mA_val, fpr_rows)
-            _bkg_mass_window_plot(mpi_val, mA_val, None, fpr_rows, _thr_at, keys[0])
+            _significance_vs_ctau_plot(cells, keys, ctaus, masses, fpr_rows)
+            _limit_vs_ctau_plot(cells, keys, ctaus, masses, fpr_rows)
+            _bkg_mass_window_plot(masses, None, fpr_rows, _thr_at, keys[0])
 
             _fpr_list = [row[0] for row in fpr_rows]
             for lxy_label in _bin_models:
                 cbl = _compute_significance_cells(keys, _thr_at, fpr_rows, lxy_only=lxy_label)
-                _significance_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, fpr_rows, lxy_label=lxy_label)
-                _limit_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, fpr_rows, lxy_label=lxy_label)
-                _bkg_mass_window_plot(mpi_val, mA_val, lxy_label, fpr_rows, _thr_at, keys[0])
+                _significance_vs_ctau_plot(cbl, keys, ctaus, masses, fpr_rows, lxy_label=lxy_label)
+                _limit_vs_ctau_plot(cbl, keys, ctaus, masses, fpr_rows, lxy_label=lxy_label)
+                _bkg_mass_window_plot(masses, lxy_label, fpr_rows, _thr_at, keys[0])
                 for k in keys:
                     best_f = _best_fpr_at(cbl, _fpr_list, k)
                     if best_f is not None:
-                        best_fpr_map[(lxy_label, k[2])] = best_f
+                        best_fpr_map[(lxy_label, k[-1])] = best_f
         else:
             # Adaptive: each lxy bin gets its own FPR grid from its own background yield in
             # the mass window, so bins are no longer cut at a shared nominal FPR -- there is
             # no meaningful combined (all-lxy) point in this mode, only per-bin plots.
             for lxy_label in _bin_models:
-                n_bkg_raw = _bkg_count_in_window(mA_val, lxy_label)
+                n_bkg_raw = _bkg_count_in_window(masses[MASS_WINDOW_IDX], lxy_label)
                 n_bkg = _bkg_yield_in_window(n_bkg_raw)
                 bin_fpr_targets = _adaptive_fpr_targets(n_bkg)
                 if not bin_fpr_targets:
-                    print(f"mpi={mpi_val:g} mA={mA_val:g} lxy={lxy_label}: no background in the "
+                    print(f"{_mass_str(masses)} lxy={lxy_label}: no background in the "
                           f"mass window (n={n_bkg_raw}) -- skipping adaptive FPR scan for this bin.")
                     continue
                 thr_at_bin = _thr_at_for(bin_fpr_targets)
                 fpr_rows_bin = _fpr_rows_for(bin_fpr_targets, thr_at_bin, lxy_only=lxy_label)
                 if not fpr_rows_bin:
                     continue
-                print(f"mpi={mpi_val:g} mA={mA_val:g} lxy={lxy_label}: B(window)={n_bkg:.3g} ({n_bkg_raw} raw) "
+                print(f"{_mass_str(masses)} lxy={lxy_label}: B(window)={n_bkg:.3g} ({n_bkg_raw} raw) "
                       f"-> adaptive FPR targets " + ", ".join(f"{f:g}" for f in bin_fpr_targets))
                 cbl = _compute_significance_cells(keys, thr_at_bin, fpr_rows_bin, lxy_only=lxy_label)
-                _significance_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, fpr_rows_bin, lxy_label=lxy_label)
-                _limit_vs_ctau_plot(cbl, keys, ctaus, mpi_val, mA_val, fpr_rows_bin, lxy_label=lxy_label)
-                _bkg_mass_window_plot(mpi_val, mA_val, lxy_label, fpr_rows_bin, thr_at_bin, keys[0])
+                _significance_vs_ctau_plot(cbl, keys, ctaus, masses, fpr_rows_bin, lxy_label=lxy_label)
+                _limit_vs_ctau_plot(cbl, keys, ctaus, masses, fpr_rows_bin, lxy_label=lxy_label)
+                _bkg_mass_window_plot(masses, lxy_label, fpr_rows_bin, thr_at_bin, keys[0])
                 for k in keys:
                     best_f = _best_fpr_at(cbl, bin_fpr_targets, k)
                     if best_f is not None:
-                        best_fpr_map[(lxy_label, k[2])] = best_f
+                        best_fpr_map[(lxy_label, k[-1])] = best_f
 
         _bin_order = [l for l in lxy_labels if l in _bin_models]
-        _best_fpr_heatmap(best_fpr_map, _bin_order, ctaus, mpi_val, mA_val)
+        _best_fpr_heatmap(best_fpr_map, _bin_order, ctaus, masses)
 
         # ---- Extra combine re-runs: fix a FPR-per-bin choice, then combine again ----
 
@@ -1468,9 +1507,9 @@ if _args.significance:
         vote = _majority_vote_fpr(best_fpr_map, _bin_order, ctaus)
         if vote:
             fpr_for_bin = {lb: f for lb, (f, _c) in vote.items()}
-            _mv_path = _LIMITS_DIR / f'majority_vote_fpr_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.txt'
+            _mv_path = _LIMITS_DIR / f'majority_vote_fpr_{_mass_tag(masses)}.txt'
             with open(_mv_path, "w") as fh:
-                fh.write(f"Mass point mpi={mpi_val:g} mA={mA_val:g}\n")
+                fh.write(f"Mass point {_mass_str(masses)}\n")
                 fh.write("Majority-vote FPR per lxy bin (mode of the per-(bin,lifetime) best FPR "
                          "across all lifetimes; ties broken by the tightest FPR):\n")
                 for lb in _bin_order:
@@ -1483,8 +1522,8 @@ if _args.significance:
                 fh.write("\nCombined limit re-run with that fixed per-bin FPR, per lifetime:\n")
                 for k in keys:
                     r, _used = _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag="majvote")
-                    majority_r[k[2]] = r
-                    fh.write(f"  ctau={k[2]:g} mm: expected 95% CL limit r < {r:.4g}\n")
+                    majority_r[k[-1]] = r
+                    fh.write(f"  ctau={k[-1]:g} mm: expected 95% CL limit r < {r:.4g}\n")
             print(f"Wrote majority-vote FPR summary to {_mv_path}")
 
             _wp_bins = {}
@@ -1511,7 +1550,7 @@ if _args.significance:
                         roc = _roc_for(lb, k)
                         wp = _wp_from_roc(*roc, f_win) if roc is not None else None
                         if wp is not None:
-                            _thr_c[f"{k[2]:g}"], _fpr_c[f"{k[2]:g}"] = wp[0], wp[1]
+                            _thr_c[f"{k[-1]:g}"], _fpr_c[f"{k[-1]:g}"] = wp[0], wp[1]
                     if not _thr_c:
                         continue
                     _entry["fpr_achieved_by_ctau"] = _fpr_c
@@ -1519,32 +1558,31 @@ if _args.significance:
                 _wp_bins[lb] = _entry
             _res = _signal_mass_window(keys[0])
             _wp_entry = {
-                "mpi": float(mpi_val),
-                "mA": float(mA_val),
+                **{p: float(v) for p, v in zip(MASS_PARAMS, masses)},
                 "mass_window": [float(x) for x in _res[0]] if _res is not None else None,
                 "bins": _wp_bins,
                 "expected_limit_r": {f"{c:g}": (float(r) if np.isfinite(r) else None)
                                      for c, r in majority_r.items()},
             }
             if use_conditional:
-                _wp_entry["cond_theta"] = {f"{k[2]:g}": [float(v) for v in _theta_of(k)] for k in keys}
-            _wp_out["mass_points"][f"mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}"] = _wp_entry
+                _wp_entry["cond_theta"] = {f"{k[-1]:g}": [float(v) for v in _theta_of(k)] for k in keys}
+            _wp_out["mass_points"][_mass_tag(masses)] = _wp_entry
             with open(_WP_PATH, "w") as fh:
                 json.dump(_wp_out, fh, indent=2)
             print(f"Wrote majority-vote working points to {_WP_PATH}")
 
         # (2) Per-lifetime best: each bin uses its own best FPR for that specific lifetime
         # (may differ bin-to-bin and lifetime-to-lifetime).
-        _pl_path = _LIMITS_DIR / f'per_lifetime_best_fpr_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.txt'
+        _pl_path = _LIMITS_DIR / f'per_lifetime_best_fpr_{_mass_tag(masses)}.txt'
         with open(_pl_path, "w") as fh:
-            fh.write(f"Mass point mpi={mpi_val:g} mA={mA_val:g}\n")
+            fh.write(f"Mass point {_mass_str(masses)}\n")
             fh.write("Per-lifetime combined limit re-run: each bin cut at its OWN best FPR for "
                      "that specific lifetime:\n")
             for k in keys:
-                fpr_for_bin = {lb: best_fpr_map[(lb, k[2])] for lb in _bin_order if (lb, k[2]) in best_fpr_map}
+                fpr_for_bin = {lb: best_fpr_map[(lb, k[-1])] for lb in _bin_order if (lb, k[-1]) in best_fpr_map}
                 r, used = _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag="perlifetime")
-                perlifetime_r[k[2]] = r
-                fh.write(f"  ctau={k[2]:g} mm:\n")
+                perlifetime_r[k[-1]] = r
+                fh.write(f"  ctau={k[-1]:g} mm:\n")
                 for lb in _bin_order:
                     if lb in used:
                         fh.write(f"    {lb}: FPR = {used[lb]:g}\n")
@@ -1555,19 +1593,19 @@ if _args.significance:
         # manually-selected FPR values -- reuses the already-computed 'cells', no extra
         # combine calls (the combined-plot cells already scanned every FPR in fpr_rows).
         if not ADAPTIVE_FPR:
-            _cmp_path = _LIMITS_DIR / f'fpr_comparison_mpi{_flabel(mpi_val)}_mA{_flabel(mA_val)}.txt'
+            _cmp_path = _LIMITS_DIR / f'fpr_comparison_{_mass_tag(masses)}.txt'
             with open(_cmp_path, "w") as fh:
-                fh.write(f"Mass point mpi={mpi_val:g} mA={mA_val:g} "
+                fh.write(f"Mass point {_mass_str(masses)} "
                          f"(fixed FPR grid, shared across all lxy bins)\n")
                 fh.write("Combined (all-lxy) expected limit vs FPR, per lifetime:\n")
                 for k in keys:
-                    fh.write(f"  ctau={k[2]:g} mm:\n")
+                    fh.write(f"  ctau={k[-1]:g} mm:\n")
                     for f_t, _fa, _thr in fpr_rows:
                         r = _expected_limit(cells.get((f_t, k), ()))
                         fh.write(f"    FPR={f_t:g}: expected 95% CL limit r < {r:.4g}\n")
             print(f"Wrote fixed-grid FPR comparison to {_cmp_path}")
 
-        _best_fpr_strategy_plot(mpi_val, mA_val, keys, majority_r, perlifetime_r,
+        _best_fpr_strategy_plot(masses, keys, majority_r, perlifetime_r,
                                  fixed_cells=(cells if not ADAPTIVE_FPR else None),
                                  fpr_rows=(fpr_rows if not ADAPTIVE_FPR else None))
 
