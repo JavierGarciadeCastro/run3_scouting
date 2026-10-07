@@ -1,0 +1,301 @@
+<title>train_discriminant.py</title>
+<meta name="description" content="Guide to running and following BDT/train_discriminant.py (BDT and PNN per lxy bin).">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* Layout: columna de lectura única (~72ch) con índice lateral fijo en pantallas anchas */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2330;
+  --muted: #5a6577;
+  --line: #dde2ea;
+  --accent: #0b5d7a;
+  --accent-soft: #e3f0f5;
+  --code-bg: #eef1f5;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --font-display: "IBM Plex Serif", Georgia, serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --surface: #171e27; --fg: #dfe5ee; --muted: #93a0b3; --line: #2a3441;
+    --accent: #5cb8d6; --accent-soft: #15303b; --code-bg: #1c2530; --warn: #e9b65a; --warn-soft: #2d2412;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --surface: #171e27; --fg: #dfe5ee; --muted: #93a0b3; --line: #2a3441;
+  --accent: #5cb8d6; --accent-soft: #15303b; --code-bg: #1c2530; --warn: #e9b65a; --warn-soft: #2d2412;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.6;
+  padding-inline: 16px; padding-block: 0 64px;
+}
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 48px; }
+@media (max-width: 860px) { .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; } nav.toc { display: none; } }
+nav.toc { position: sticky; top: env(safe-area-inset-top, 0px); align-self: start; padding-top: 56px; font-size: 13.5px; }
+nav.toc p { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); }
+main { min-width: 0; max-width: 76ch; }
+header { padding-top: 48px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12.5px; color: var(--accent); letter-spacing: .02em; margin: 0; }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: 2.1rem; line-height: 1.2; margin: 6px 0 10px; text-wrap: balance; }
+h1 code { font-family: var(--font-mono); font-weight: 500; font-size: .85em; }
+.lede { color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 1.4rem; margin: 44px 0 12px; text-wrap: balance; scroll-margin-top: 16px; }
+h3 { font-size: 1.02rem; font-weight: 600; margin: 26px 0 8px; }
+p, li { max-width: 70ch; }
+a { color: var(--accent); }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.cmd { position: relative; margin: 10px 0 16px; }
+.cmd pre {
+  margin: 0; overflow-x: auto; background: var(--code-bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 12px 84px 12px 14px; font-family: var(--font-mono); font-size: 13.2px; line-height: 1.55;
+}
+.cmd pre code { background: none; padding: 0; font-size: inherit; }
+.cmd button {
+  position: absolute; top: 8px; right: 8px; font: 500 12px var(--font-body);
+  color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; cursor: pointer;
+}
+.cmd button:hover { border-color: var(--accent); }
+.cmd button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.c { color: var(--muted); }
+.table-wrap { overflow-x: auto; margin: 10px 0 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.8px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: none; }
+th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; background: var(--code-bg); }
+td:first-child { white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.group td { background: var(--accent-soft); font-weight: 600; font-size: 12.5px; color: var(--accent); }
+.note { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 14px 0; }
+.note strong { color: var(--warn); }
+ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 14px; }
+ol.steps > li { counter-increment: s; position: relative; padding-left: 40px; }
+ol.steps > li::before {
+  content: counter(s); position: absolute; left: 0; top: 1px; width: 26px; height: 26px; border-radius: 50%;
+  border: 1.5px solid var(--accent); color: var(--accent); font: 600 13px/23px var(--font-mono); text-align: center;
+}
+.loc { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+ul { padding-left: 20px; }
+li + li { margin-top: 4px; }
+.tree { font-family: var(--font-mono); font-size: 13px; line-height: 1.5; }
+footer { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#summary">What it does</a></li>
+    <li><a href="#requirements">Requirements</a></li>
+    <li><a href="#run">How to run it</a></li>
+    <li><a href="#options">Options</a></li>
+    <li><a href="#output">Output</a></li>
+    <li><a href="#flow">Code walkthrough</a></li>
+    <li><a href="#pnn">PNN details</a></li>
+    <li><a href="#evaluate">Next: evaluation</a></li>
+    <li><a href="#caveats">Caveats</a></li>
+  </ol>
+</nav>
+
+<main>
+<header>
+  <p class="eyebrow">pNN/run3_scouting/BDT/train_discriminant.py</p>
+  <h1>Training the discriminant with <code>train_discriminant.py</code></h1>
+  <p class="lede">Trains a signal-vs-background discriminant for the scouting DQCD analysis, with one independent model per l<sub>xy</sub> bin. It can be an XGBoost BDT or a parametric neural network (PNN) in PyTorch, both using the same data, weights and train/test split.</p>
+</header>
+
+<h2 id="summary">What it does</h2>
+<ul>
+  <li><strong>Signal:</strong> private DQCD tuples of the chosen scenario (<code>/ceph/cms/store/group/Run3Scouting/&lt;sig-dir&gt;</code>), one file per point (m<sub>π</sub>, m<sub>A</sub>, cτ).</li>
+  <li><strong>Background:</strong> MinBias filtered with DoubleMuOS43, 2024 (<code>tuples_minbias</code>), weighted by cross section (≈ 5.18·10<sup>5</sup> pb after the filter).</li>
+  <li><strong>Inputs:</strong> 138 per-event variables (SV1 and SV2 plus their two muons each), the same list as <code>workingpoint.py</code>. With <code>--conditional</code>, the signal parameters are appended at the end.</li>
+  <li><strong>l<sub>xy</sub> bins (SV1, cm):</strong> <code>[0, 0.2]</code>, <code>[0.2, 3.1]</code>, <code>[3.1, 11]</code>, <code>[11, 70]</code>. One model per bin.</li>
+  <li><strong>Split:</strong> 70/30 by event number (<code>evtn % 10 &lt; 7</code> → train). Test events are never used for training.</li>
+</ul>
+
+<h2 id="requirements">Requirements</h2>
+<ul>
+  <li>Read access to <code>/ceph/cms/store/group/Run3Scouting</code>.</li>
+  <li>Python 3 with <code>numpy</code>, <code>pandas</code>, <code>uproot</code>, <code>xgboost</code>, <code>scikit-learn</code>, <code>matplotlib</code> and <code>mplhep</code>.</li>
+  <li>For <code>--model pnn</code>, also <code>torch</code>. Without it the script exits with a clear message.</li>
+  <li>Memory: loading the data takes 10–15 minutes, and training is capped at 15 M events by default (<code>--train-max-events</code>) to bound RAM usage.</li>
+</ul>
+<div class="note"><strong>Note:</strong> <code>torch</code> is not installed in the current environment (<code>ModuleNotFoundError</code>). The BDTs work; for the PNN, activate an environment with PyTorch, ideally on a GPU node.</div>
+<p>Check the environment:</p>
+<div class="cmd"><pre><code>python3 -c "import uproot, xgboost, mplhep, sklearn; print('BDT ok')"
+python3 -c "import torch; print('torch', torch.__version__, 'cuda:', torch.cuda.is_available())"</code></pre></div>
+<p>ROOT reading uses 4 decompression threads. Change it with the <code>WP_READ_THREADS</code> environment variable (1 disables the pool):</p>
+<div class="cmd"><pre><code>export WP_READ_THREADS=8</code></pre></div>
+
+<h2 id="run">How to run it</h2>
+<p>The examples are run from <code>pNN/run3_scouting/</code>. Output is always written next to the script (inside <code>BDT/</code>), so the working directory does not change where files end up.</p>
+
+<h3>BDT (equivalent to workingpoint.py)</h3>
+<div class="cmd"><pre><code>python3 BDT/train_discriminant.py --model bdt --scenario A</code></pre></div>
+
+<h3>Non-parametric neural network</h3>
+<div class="cmd"><pre><code><span class="c"># Without --conditional: a plain fully connected classifier</span>
+python3 BDT/train_discriminant.py --model pnn</code></pre></div>
+
+<h3>Parametric NN (m<sub>A</sub>/m<sub>π</sub> and cτ as inputs)</h3>
+<div class="cmd"><pre><code>python3 BDT/train_discriminant.py --model pnn --conditional --cond-var mratio ctau</code></pre></div>
+
+<h3>Hold signal points out of training (interpolation test)</h3>
+<div class="cmd"><pre><code><span class="c"># All cτ of mpi=4, mA=1.33, and only cτ=10 mm of mpi=2, mA=0.67</span>
+python3 BDT/train_discriminant.py --model pnn --conditional --cond-var mratio ctau \
+    --holdout 4:1.33 2:0.67:10</code></pre></div>
+
+<h3>Single mass point, L1 required, on GPU</h3>
+<div class="cmd"><pre><code>python3 BDT/train_discriminant.py --model pnn --mass-point 4:1.33 --require-l1 --device cuda:0</code></pre></div>
+
+<h3>Tuning the network</h3>
+<div class="cmd"><pre><code>python3 BDT/train_discriminant.py --model pnn --conditional --cond-var mratio \
+    --pnn-layers 4 --pnn-nodes 128 --pnn-dropout 0.1 --pnn-lr 5e-4 \
+    --pnn-batch-size 2048 --pnn-max-epochs 300 --pnn-patience 20 \
+    --out-name pnn_tests</code></pre></div>
+
+<h3>In the background with a log</h3>
+<div class="cmd"><pre><code>nohup python3 BDT/train_discriminant.py --model pnn --conditional --cond-var mratio ctau \
+    &gt; train_pnn_condMratioCtau.log 2&gt;&amp;1 &amp;
+tail -f train_pnn_condMratioCtau.log</code></pre></div>
+
+<h2 id="options">Options</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th>Option</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr class="group"><td colspan="3">Model and sample</td></tr>
+    <tr><td><code>--model</code></td><td><code>bdt</code></td><td><code>bdt</code> (XGBoost) or <code>pnn</code> (PyTorch).</td></tr>
+    <tr><td><code>--scenario</code></td><td><code>A</code></td><td>DQCD scenario: <code>A</code>, <code>B1</code>, <code>B2</code>, <code>C</code>.</td></tr>
+    <tr><td><code>--sig-dir</code></td><td><code>tuples_DQCD_ScenarioA</code></td><td>Subdirectory of the signal tuples under <code>/ceph/.../Run3Scouting</code>.</td></tr>
+    <tr><td><code>--mass-point</code></td><td>all</td><td>Only this point <code>mpi:mA</code> (all its cτ values), e.g. <code>4:1.33</code>.</td></tr>
+    <tr><td><code>--holdout</code></td><td>none</td><td>Points <code>mpi:mA[:ctau]</code> that go to the test set only.</td></tr>
+    <tr><td><code>--require-l1</code></td><td>off</td><td>Keep only events with <code>passL1 != 0</code>.</td></tr>
+    <tr class="group"><td colspan="3">Parametric inputs</td></tr>
+    <tr><td><code>--conditional</code></td><td>off</td><td>Add the parameters of <code>--cond-var</code> as inputs.</td></tr>
+    <tr><td><code>--cond-var</code></td><td><code>mratio</code></td><td>One or more of <code>mratio</code>, <code>ctau</code>, <code>mpi</code>.</td></tr>
+    <tr><td><code>--mratio-grid</code></td><td><code>0.33 0.10</code></td><td>Nominal m<sub>A</sub>/m<sub>π</sub> values each point is snapped to.</td></tr>
+    <tr class="group"><td colspan="3">Train/test split</td></tr>
+    <tr><td><code>--do-random-splitting</code></td><td>off</td><td>Random stratified 70/30 instead of the <code>evtn</code>-based split.</td></tr>
+    <tr><td><code>--train-max-events</code></td><td class="num">15 000 000</td><td>Maximum number of training events (0 = no cap).</td></tr>
+    <tr class="group"><td colspan="3">Output</td></tr>
+    <tr><td><code>--out-name</code></td><td><code>significance_plots_priv</code></td><td>Base name of the output directory under <code>BDT/</code>.</td></tr>
+    <tr class="group"><td colspan="3">PNN only</td></tr>
+    <tr><td><code>--pnn-layers</code></td><td class="num">3</td><td>Hidden layers.</td></tr>
+    <tr><td><code>--pnn-nodes</code></td><td class="num">64</td><td>Nodes per layer.</td></tr>
+    <tr><td><code>--pnn-dropout</code></td><td class="num">0.0</td><td>Dropout after each layer.</td></tr>
+    <tr><td><code>--pnn-lr</code></td><td class="num">1e-3</td><td>Initial Adam learning rate.</td></tr>
+    <tr><td><code>--pnn-batch-size</code></td><td class="num">1024</td><td>Batch size.</td></tr>
+    <tr><td><code>--pnn-epoch-size</code></td><td class="num">500 000</td><td>Events sampled per epoch.</td></tr>
+    <tr><td><code>--pnn-max-epochs</code></td><td class="num">200</td><td>Maximum epochs (fixed minimum of 20).</td></tr>
+    <tr><td><code>--pnn-patience</code></td><td class="num">15</td><td>Epochs without validation improvement before stopping.</td></tr>
+    <tr><td><code>--device</code></td><td><code>auto</code></td><td><code>auto</code> uses CUDA if available; also <code>cpu</code>, <code>cuda:0</code>, …</td></tr>
+  </tbody>
+</table></div>
+<p>The BDT hyperparameters are fixed in <code>BDT_HYPERPARAMETERS</code>: 100 trees, depth 3, learning rate 0.1, <code>tree_method="hist"</code>, 4 threads.</p>
+
+<h2 id="output">Output</h2>
+<p>The output directory is built from the options:</p>
+<div class="cmd"><pre><code>BDT/&lt;out-name&gt;[_PNN][_cond&lt;Vars&gt;][_L1req]/Scenario&lt;S&gt;[_holdout-...]/</code></pre></div>
+<div class="table-wrap"><table>
+  <thead><tr><th>Command</th><th>Directory</th></tr></thead>
+  <tbody>
+    <tr><td><code>--model bdt</code></td><td><code>BDT/significance_plots_priv/ScenarioA/</code></td></tr>
+    <tr><td><code>--model pnn</code></td><td><code>BDT/significance_plots_priv_PNN/ScenarioA/</code></td></tr>
+    <tr><td><code>--model pnn --conditional --cond-var mratio ctau</code></td><td><code>BDT/significance_plots_priv_PNN_condMratioCtau/ScenarioA/</code></td></tr>
+    <tr><td><code>--model bdt --require-l1 --holdout 4:1.33</code></td><td><code>BDT/significance_plots_priv_L1req/ScenarioA_holdout-4-1p33/</code></td></tr>
+  </tbody>
+</table></div>
+<p>Inside each one:</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>File</th><th>Contents</th></tr></thead>
+  <tbody>
+    <tr><td><code>models/binned_lxy/bdt_lxy_&lt;bin&gt;.json</code><br><code>models/binned_lxy/pnn_lxy_&lt;bin&gt;.pt</code></td><td>Trained model of each bin. The <code>.pt</code> stores the weights, the standardisation mean/std, the feature list and the hyperparameters.</td></tr>
+    <tr><td><code>models/binned_lxy/&lt;model&gt;_lxy_&lt;bin&gt;_manifest.json</code></td><td>Features, configuration (conditional, L1, sig-dir, scenario), signal points used, importances and library versions. For the PNN, also the hyperparameters and best epoch.</td></tr>
+    <tr><td><code>feature_importance_by_lxy/feature_importance_lxy_&lt;bin&gt;.png</code> / <code>.txt</code></td><td>Top 30 as a plot and the full ranking as text. BDT: XGBoost gain. PNN: AUC drop when the variable is shuffled.</td></tr>
+    <tr><td><code>training_curves_by_lxy/loss_lxy_&lt;bin&gt;.png</code></td><td>PNN only: training and validation loss per epoch, with the best epoch marked.</td></tr>
+  </tbody>
+</table></div>
+<p>Bin labels: <code>0p0to0p2</code>, <code>0p2to3p1</code>, <code>3p1to11p0</code>, <code>11p0to70p0</code>. A bin with fewer than 20 training events, or missing one of the classes, is skipped; its events are excluded downstream.</p>
+<p>Loading a saved PNN outside the script:</p>
+<div class="cmd"><pre><code>import sys; sys.path.insert(0, "BDT")
+from train_discriminant import PNNClassifier
+clf = PNNClassifier.load("BDT/significance_plots_priv_PNN_condMratio/ScenarioA/models/binned_lxy/pnn_lxy_0p2to3p1.pt")
+p_sig = clf.predict_proba(X[clf.features].to_numpy())[:, 1]   <span class="c"># X not standardised</span></code></pre></div>
+<p>For a conditional PNN, fill the parameter columns (<code>param_mratio</code>, <code>param_ctau</code>, …) with the signal hypothesis you want to test.</p>
+
+<h2 id="flow">Code walkthrough</h2>
+<p>The file is split into numbered sections. This is the order in which <code>main()</code> runs them:</p>
+<ol class="steps">
+  <li><strong>Configuration.</strong> <code>parse_args()</code> reads the command line and <code>build_config()</code> collects everything into a <code>Config</code>, including the output directory name. <span class="loc">§3 · lines 153–264</span></li>
+  <li><strong>Signal inventory.</strong> <code>find_signal_files()</code> uses a regex to find <code>tuples_Signal_Scenario&lt;S&gt;_(Par|Priv)_2024_mpi-…_mA-…_ctau-…mm_2024*.root</code>, prefers already merged files (<code>*_2024.root</code>) and applies <code>--mass-point</code>. <span class="loc">§4 · lines 270–304</span></li>
+  <li><strong>Data loading.</strong> <code>build_dataset()</code> reads each ROOT file with <code>read_tuple()</code> in 2 M chunks into a float32 array, computes <code>dxy_lxy</code> (|dxy| divided by l<sub>xy</sub>·m/p<sub>T</sub>, not stored in the tuples), assigns the l<sub>xy</sub> bin with <code>pd.cut</code> and, if conditional, gives each background event the parameters of a random real signal point. <span class="loc">§5 · lines 314–404</span></li>
+  <li><strong>Weights.</strong> <code>compute_event_weights()</code>: background gets its cross-section weight; signal gets a constant weight such that Σw<sub>sig</sub> = Σw<sub>bkg</sub>. <span class="loc">line 375</span></li>
+  <li><strong>Features.</strong> <code>feature_list()</code> keeps the variables present in both signal and background (warning about missing ones) and puts the conditional parameters last. <span class="loc">line 407</span></li>
+  <li><strong>Split.</strong> <code>split_train_test()</code> does the 70/30 split, sends the <code>--holdout</code> points to test and caps training at <code>--train-max-events</code>. <span class="loc">§6 · lines 418–452</span></li>
+  <li><strong>Loop over bins.</strong> For each l<sub>xy</sub> bin, <code>train_one_bin()</code> calls <code>train_bdt()</code> or <code>train_pnn()</code>, saves the model and writes importances, curves and manifest. <span class="loc">§9 · lines 752–830</span></li>
+</ol>
+<p>Sections §7a (BDT), §7b (PNN) and §8 (plots and manifest) hold the functions that loop calls.</p>
+
+<h2 id="pnn">PNN details</h2>
+<p><code>train_pnn()</code> (line 600) does, in order:</p>
+<ol class="steps">
+  <li><strong>Internal validation.</strong> Takes 20 % of the <em>training</em> rows (max 1 M) for early stopping. The real test set is never touched.</li>
+  <li><strong>Standardisation.</strong> Per-variable mean and std fitted on train only; NaN and inf are set to 0 (the mean).</li>
+  <li><strong>Balanced sampling.</strong> Each epoch draws 500 k events with probability proportional to the weight, normalised so signal and background each sum to 0.5. Every batch is then ~50/50 and the loss needs no weights.</li>
+  <li><strong>Background parameters.</strong> If conditional, the background parameters are re-drawn from the real signal points in every batch, so the network cannot learn to separate on the parameters.</li>
+  <li><strong>Network.</strong> <code>[Linear → Dropout → ELU] × n_layers → Linear</code>, producing a logit. Adam with <code>BCEWithLogitsLoss</code>.</li>
+  <li><strong>Learning rate and stopping.</strong> The lr is multiplied by 0.9 whenever the training loss goes up. Training stops after <code>patience</code> epochs without a relative validation improvement above 0.01 %, never before epoch 20. The best state is restored.</li>
+  <li><strong>Importance.</strong> Permutation importance on up to 200 k validation events: drop in weighted AUC when each column is shuffled.</li>
+</ol>
+<p>One line is printed per epoch during training:</p>
+<div class="cmd"><pre><code>    epoch  12  train loss 0.31842  val loss 0.32107  lr 9.00e-04</code></pre></div>
+
+<h2 id="evaluate">Next: evaluation</h2>
+<p><code>evaluate_workingpoint.py</code> rebuilds the same split and evaluates on the test set without retraining. The data options must match the training run; <code>--model-dir</code> saves you from reconstructing the directory name:</p>
+<div class="cmd"><pre><code>python3 BDT/evaluate_workingpoint.py --scenario A --sig-dir tuples_DQCD_ScenarioA \
+    --model-dir BDT/significance_plots_priv/ScenarioA</code></pre></div>
+<p>If you trained with <code>--conditional</code>, <code>--cond-var</code>, <code>--holdout</code>, <code>--require-l1</code>, <code>--mass-point</code>, <code>--mratio-grid</code> or <code>--do-random-splitting</code>, repeat them exactly.</p>
+
+<h2 id="caveats">Caveats</h2>
+<div class="note"><strong>Evaluation only reads BDTs.</strong> <code>evaluate_workingpoint.py</code> looks for <code>bdt_lxy_&lt;bin&gt;.json</code> and does not yet load <code>pnn_lxy_&lt;bin&gt;.pt</code>. To evaluate the PNN it needs adapting with <code>PNNClassifier.load()</code>, whose <code>predict_proba</code> has the same shape as XGBoost's.</div>
+<div class="note"><strong>The BDT overwrites.</strong> <code>--model bdt</code> writes to the same directory as <code>workingpoint.py</code> (no <code>_PNN</code> suffix). Use <code>--out-name</code> to keep a previous training.</div>
+<ul>
+  <li>In the conditional BDT the background parameters are assigned once at load time; in the PNN they are re-drawn every batch.</li>
+  <li>With <code>--do-random-splitting</code>, <code>evtn</code> is not read and the split depends on the order of the loaded events.</li>
+  <li>The seed is fixed (42), so two identical runs give the same split and, on CPU, the same model.</li>
+</ul>
+
+<footer>Generated from <code>BDT/train_discriminant.py</code> (834 lines), 1 October 2026.</footer>
+</main>
+</div>
+
+<script>
+document.querySelectorAll('.cmd').forEach(function (box) {
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', function () {
+    var text = box.querySelector('pre').innerText;
+    function done() { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1400); }
+    function fallback() {
+      var r = document.createRange(); r.selectNodeContents(box.querySelector('pre'));
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      btn.textContent = 'Selected';
+    }
+    try { navigator.clipboard.writeText(text).then(done, fallback); } catch (e) { fallback(); }
+  });
+  box.appendChild(btn);
+});
+</script>
