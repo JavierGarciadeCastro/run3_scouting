@@ -102,6 +102,8 @@ _parser.add_argument("--do-random-splitting", action=argparse.BooleanOptionalAct
 _parser.add_argument("--mass-point", default=None, metavar="mpi:mA | mzd",
                      help="Must match the --mass-point used for training (data-loading filter). "
                           "Leave unset if training did not use --mass-point.")
+_parser.add_argument("--combine-jobs", type=int, default=16, metavar="N",
+                     help="Number of combine calls run in parallel (default 16; 1 = sequential).")
 _parser.add_argument("--plot-only", default=None, metavar="mpi:mA | mzd",
                      help="Optional: restrict the final plots (discriminant/significance/limit) "
                           "to this single signal mass point. Does NOT affect data loading or the "
@@ -180,8 +182,9 @@ print(f"Reading trained models from {_BINMODEL_DIR}")
 _train_manifests = sorted(_BINMODEL_DIR.glob("*_manifest.json"))
 with open(_train_manifests[0]) as _mf:
     _train_man = json.load(_mf)
-TRAIN_MODEL_TAG = ("HAHM" if _train_man.get("model", "dqcd") == "hahm"
-                   else f"Scenario{_train_man.get('scenario', 'A')}")
+_train_scen = _train_man.get('scenario', 'A')
+TRAIN_MODEL_TAG = {"hahm": "HAHM", "both": f"Scenario{_train_scen}_HAHM"}.get(
+    _train_man.get("model", "dqcd"), f"Scenario{_train_scen}")
 
 EVAL_ROOT = OUT_ROOT / ("eval_testonly" if TRAIN_MODEL_TAG == MODEL_TAG else f"eval_testonly_on{MODEL_TAG}")
 if TRAIN_MODEL_TAG != MODEL_TAG:
@@ -440,14 +443,6 @@ def _mp_dir(masses, lxy_label=None):
 # Reproduce the exact train/test split used by workingpoint.py (same
 # --do-random-splitting, same row order) -- we only ever use the TEST half below.
 # ---------------------------------------------------------------------------
-if use_conditional:
-    # Same placeholder theta as training (random signal theta per background event). It is
-    # NOT used for the evaluation: the background test set is re-scored below at every
-    # signal theta, and all of it is used against each signal point.
-    _rng            = np.random.default_rng(42)
-    _sig_theta_grid = df_sig[COND_COL].drop_duplicates().to_numpy()
-    df_bkg[COND_COL] = _sig_theta_grid[_rng.integers(0, len(_sig_theta_grid), size=len(df_bkg))]
-
 df_global = pd.concat([df_sig, df_bkg], ignore_index=True)
 del df_sig, df_bkg
 
@@ -476,7 +471,7 @@ else:
     else:
         _tr_i, _te_i = split_by_evtn(df_global['evtn'].to_numpy())
 
-# Note: workingpoint.py's --train-max-events cap only trims _tr_i (using an
+# Note: workingpoint.py's --train-max-prompt-bkg cap only trims _tr_i (using an
 # independent RNG that doesn't touch global numpy state), so it never
 # affects _te_i -- we don't need to know its value to reproduce the test set.
 
@@ -502,9 +497,12 @@ _bin_models   = {}
 _bin_thr      = {}
 
 print("Loading trained BDTs and scoring the test set")
+_bin_model_file = {}
 for lxy_label in lxy_labels:
     model_path    = _BINMODEL_DIR / f"bdt_lxy_{lxy_label}.json"
-    manifest_path = _BINMODEL_DIR / f"bdt_lxy_{lxy_label}_manifest.json"
+    if not model_path.is_file() and (_BINMODEL_DIR / f"pnn_lxy_{lxy_label}.pt").is_file():
+        model_path = _BINMODEL_DIR / f"pnn_lxy_{lxy_label}.pt"
+    manifest_path = _BINMODEL_DIR / f"{model_path.stem}_manifest.json"
     if not model_path.is_file():
         print(f"No trained model for bin {lxy_label} -- skipping (matches training's skip).")
         continue
@@ -515,9 +513,15 @@ for lxy_label in lxy_labels:
         print(f"[WARNING] bin {lxy_label}: feature list in manifest differs from this run's "
               f"input_vars+cond_vars -- scores may be invalid.")
 
-    bdt_bin = XGBClassifier()
-    bdt_bin.load_model(str(model_path))
+    if model_path.suffix == ".pt":
+        with matplotlib.rc_context():
+            from train_discriminant import PNNClassifier
+        bdt_bin = PNNClassifier.load(str(model_path))
+    else:
+        bdt_bin = XGBClassifier()
+        bdt_bin.load_model(str(model_path))
     _bin_models[lxy_label] = bdt_bin
+    _bin_model_file[lxy_label] = model_path.name
 
     if use_conditional:
         continue   # per-(theta, bin) ROCs are built after scoring, with the background at each theta
@@ -951,6 +955,8 @@ if _args.significance:
 
     import subprocess, uuid
 
+    _COMBINE_POOL = ThreadPoolExecutor(max_workers=max(1, _args.combine_jobs))
+
     _CARDS_DIR = EVAL_ROOT / "datacards"
     os.makedirs(_CARDS_DIR, exist_ok=True)
     _LIMITS_DIR = EVAL_ROOT / "best_fpr_limits"
@@ -1298,8 +1304,11 @@ if _args.significance:
                     continue
                 Z  = float(np.sqrt(2.0 * ((s + b) * np.log1p(s / b) - s)))
                 p0 = float(norm.sf(Z))
-                limit = _get_asymptotic_limit(bins_sb, key=k, f_t=f_t, lxy_label=lxy_only)
+                limit = _COMBINE_POOL.submit(_get_asymptotic_limit, bins_sb, key=k, f_t=f_t, lxy_label=lxy_only)
                 cells[(f_t, k)] = (p0, Z, s, b, ns_tot, nb_tot, limit)
+        for ck, cell in cells.items():
+            if len(cell) == 7:
+                cells[ck] = cell[:6] + (cell[6].result(),)
         return cells
 
     def _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag):
@@ -1520,8 +1529,9 @@ if _args.significance:
                     votes_str = ", ".join(f"{f:g}:{n}" for f, n in sorted(counts.items()))
                     fh.write(f"  {lb}: FPR = {f_win:g}  (votes {votes_str})\n")
                 fh.write("\nCombined limit re-run with that fixed per-bin FPR, per lifetime:\n")
-                for k in keys:
-                    r, _used = _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag="majvote")
+                _mv_res = list(_COMBINE_POOL.map(
+                    lambda k: _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag="majvote"), keys))
+                for k, (r, _used) in zip(keys, _mv_res):
                     majority_r[k[-1]] = r
                     fh.write(f"  ctau={k[-1]:g} mm: expected 95% CL limit r < {r:.4g}\n")
             print(f"Wrote majority-vote FPR summary to {_mv_path}")
@@ -1532,7 +1542,7 @@ if _args.significance:
                     continue
                 f_win, counts = vote[lb]
                 _entry = {
-                    "model": f"bdt_lxy_{lb}.json",
+                    "model": _bin_model_file[lb],
                     "fpr_target": float(f_win),
                     "votes": {f"{f:g}": int(n) for f, n in sorted(counts.items())},
                 }
@@ -1578,9 +1588,11 @@ if _args.significance:
             fh.write(f"Mass point {_mass_str(masses)}\n")
             fh.write("Per-lifetime combined limit re-run: each bin cut at its OWN best FPR for "
                      "that specific lifetime:\n")
-            for k in keys:
-                fpr_for_bin = {lb: best_fpr_map[(lb, k[-1])] for lb in _bin_order if (lb, k[-1]) in best_fpr_map}
-                r, used = _combined_limit_with_bin_fpr(k, fpr_for_bin, card_tag="perlifetime")
+            _pl_res = list(_COMBINE_POOL.map(
+                lambda k: _combined_limit_with_bin_fpr(
+                    k, {lb: best_fpr_map[(lb, k[-1])] for lb in _bin_order if (lb, k[-1]) in best_fpr_map},
+                    card_tag="perlifetime"), keys))
+            for k, (r, used) in zip(keys, _pl_res):
                 perlifetime_r[k[-1]] = r
                 fh.write(f"  ctau={k[-1]:g} mm:\n")
                 for lb in _bin_order:
