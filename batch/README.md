@@ -81,6 +81,7 @@ cd batch
 . install_cmssw.sh 2024central # This should create a CMSSW_15_0_2 rel (if it already existed before the previous step, delete it before doing .install)
 python3 crabcfg_run3_centralmc.py 2024 DQCD_sig # Dark shower signals, reading from data/datasets_dqcd_2024_signal.txt
 python3 crabcfg_run3_centralmc.py 2024 DQCD_bkg # QCD and MinBias background, reading from data/datasets_dqcd_2024_background.txt
+python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x # HAHM signal, reading from data/datasets_hahm_2024_signal.txt
 ```
 
 **Note 1: Right now setup for central HAHM, central BtoPhi and part of private DQCD samples are available**

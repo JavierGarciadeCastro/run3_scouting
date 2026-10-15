@@ -63,119 +63,141 @@ if (len(sys.argv)>2):
     config.Site.whitelist = ["T2_US_UCSD", "T2_US_Florida", "T2_US_Wisconsin", "T2_US_Nebraska", "T2_US_Purdue"]
     config.Data.ignoreLocality = True
     if "HTo2ZdTo2mu2x" in sys.argv[2]:
-        config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_HTo2ZdTo2mu2x_" + str(year) + "_v"+ntuple_version # DB no
+        config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_HTo2ZdTo2mu2x_" + str(year) # DB no
         config.Data.inputDBS = 'global'
         config.Data.publication = True
-        # Set the points to produce
-        mass_points.append(['0p5', '1'])
-        mass_points.append(['0p5', '10'])
-        mass_points.append(['0p7', '1'])
-        mass_points.append(['0p7', '10'])
-        mass_points.append(['1p5', '1'])
-        mass_points.append(['1p5', '10'])
-        mass_points.append(['1p5', '100'])
-        mass_points.append(['2p0', '1'])
-        mass_points.append(['2p0', '10'])
-        mass_points.append(['2p0', '100'])
-        mass_points.append(['2p5', '1'])
-        mass_points.append(['2p5', '10'])
-        mass_points.append(['2p5', '100'])
-        mass_points.append(['3p0', '1'])
-        mass_points.append(['3p0', '10'])
-        mass_points.append(['3p0', '100'])
-        mass_points.append(['4p0', '1'])
-        mass_points.append(['4p0', '10'])
-        mass_points.append(['4p0', '100'])
-        mass_points.append(['5p0', '1'])
-        mass_points.append(['5p0', '10'])
-        mass_points.append(['5p0', '100'])
-        mass_points.append(['6p0', '1'])
-        mass_points.append(['6p0', '10'])
-        mass_points.append(['6p0', '100'])
-        mass_points.append(['7p0', '1'])
-        mass_points.append(['7p0', '10'])
-        mass_points.append(['7p0', '100'])
-        mass_points.append(['8p0', '1'])
-        mass_points.append(['8p0', '10'])
-        mass_points.append(['8p0', '100'])
-        mass_points.append(['10p0', '1'])
-        mass_points.append(['10p0', '10'])
-        mass_points.append(['10p0', '100'])
-        mass_points.append(['12p0', '1'])
-        mass_points.append(['12p0', '10'])
-        mass_points.append(['12p0', '100'])
-        mass_points.append(['14p0', '1'])
-        mass_points.append(['14p0', '10'])
-        mass_points.append(['14p0', '100'])
-        mass_points.append(['16p0', '1'])
-        mass_points.append(['16p0', '10'])
-        mass_points.append(['16p0', '100'])
-        mass_points.append(['20p0', '1'])
-        mass_points.append(['20p0', '10'])
-        mass_points.append(['20p0', '100'])
-        mass_points.append(['22p0', '1'])
-        mass_points.append(['22p0', '10'])
-        mass_points.append(['22p0', '100'])
-        mass_points.append(['24p0', '1'])
-        mass_points.append(['24p0', '10'])
-        mass_points.append(['24p0', '100'])
-        mass_points.append(['30p0', '1'])
-        mass_points.append(['30p0', '10'])
-        mass_points.append(['30p0', '100'])
-        mass_points.append(['30p0', '1000'])
-        mass_points.append(['34p0', '1'])
-        mass_points.append(['34p0', '10'])
-        mass_points.append(['34p0', '100'])
-        mass_points.append(['34p0', '1000'])
-        mass_points.append(['40p0', '1'])
-        mass_points.append(['40p0', '10'])
-        mass_points.append(['40p0', '100'])
-        mass_points.append(['40p0', '1000'])
-        mass_points.append(['44p0', '1'])
-        mass_points.append(['44p0', '10'])
-        mass_points.append(['44p0', '100'])
-        mass_points.append(['44p0', '1000'])
-        mass_points.append(['50p0', '1'])
-        mass_points.append(['50p0', '10'])
-        mass_points.append(['50p0', '100'])
-        mass_points.append(['50p0', '1000'])
-        ## Extension
-        #mass_points.append(['1p5', '1000'])
-        mass_points.append(['2p0', '1000'])
-        mass_points.append(['2p5', '1000'])
-        mass_points.append(['3p0', '1000'])
-        mass_points.append(['4p0', '1000'])
-        mass_points.append(['5p0', '1000'])
-        mass_points.append(['6p0', '1000'])
-        mass_points.append(['7p0', '1000'])
-        mass_points.append(['8p0', '1000'])
-        mass_points.append(['10p0', '1000'])
-        mass_points.append(['12p0', '1000'])
-        mass_points.append(['14p0', '1000'])
-        mass_points.append(['16p0', '1000'])
-        mass_points.append(['20p0', '1000'])
-        mass_points.append(['22p0', '1000'])
-        mass_points.append(['24p0', '1000'])
-        for [m,t] in mass_points:
-            config_list.append(config)
-            config_list[-1].JobType.pyCfgParams=["era={}".format(era),"data=False",]
-            if era=="2022":
-                dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22DRPremix-124X_mcRun3_2022_realistic_v12-v2/AODSIM'.format(m, t)
+        if era == "2024":
+            # Central HAHM 2024 MiniAOD signals, published to DBS global as
+            # /HTo2ZdTo2Mu2X_Par-MZd-{mass}-Ctau-{ctau}mm_TuneCP5_13p6TeV_madgraph-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
+            inputfile = 'data/datasets_hahm_2024_signal.txt'
+            with open(inputfile,'r') as f:
+                dataset_list = f.readlines()
+            for dataset_name in dataset_list:
+                dataset_name = dataset_name.strip()
+                if not dataset_name or dataset_name[0] == '#':
+                    continue
+                config_list.append(config)
+                config_list[-1].JobType.pyCfgParams=["era={}".format(era),"data=False",]
                 config_list[-1].Data.inputDataset = dataset_name
-            elif era=="2022postEE":
-                dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM'.format(m, t)
-                config_list[-1].Data.inputDataset = dataset_name
-            elif era=="2023":
-                #dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23DRPremix-130X_mcRun3_2023_realistic_v15-v2/AODSIM'.format(m, t)
-                dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23DRPremix-130X_mcRun3_2023_realistic_v14-v2/AODSIM'.format(m, t)
-                config_list[-1].Data.inputDataset = dataset_name
-            elif era=="2023BPix":
-                #dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23BPixDRPremix-130X_mcRun3_2023_realistic_postBPix_v6-v2/AODSIM'.format(m, t)
-                dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23BPixDRPremix-130X_mcRun3_2023_realistic_postBPix_v2-v2/AODSIM'.format(m, t)
-                config_list[-1].Data.inputDataset = dataset_name
-            config_list[-1].General.requestName = 'centralSkim__{}_{}_m-{}_ctau-{}mm_{}'.format(signal, era, m, t, ntuple_version)
-            print(config)
-            crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
+                m = dataset_name.split('MZd-')[1].split('-Ctau')[0]
+                t = dataset_name.split('-Ctau-')[1].split('mm_')[0]
+                config_list[-1].General.requestName = 'centralSkim__{}_{}_m-{}_ctau-{}mm_{}'.format(signal, era, m, t, ntuple_version)
+                print(config)
+                try:
+                    crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
+                except (HTTPException, ClientException) as e:
+                    print('centralSkim__{}_{}_m-{}_ctau-{}mm_{} cant be launched! Skipping... ({})'.format(signal, era, m, t, ntuple_version, e))
+        else:
+            # Set the points to produce
+            mass_points.append(['0p5', '1'])
+            mass_points.append(['0p5', '10'])
+            mass_points.append(['0p7', '1'])
+            mass_points.append(['0p7', '10'])
+            mass_points.append(['1p5', '1'])
+            mass_points.append(['1p5', '10'])
+            mass_points.append(['1p5', '100'])
+            mass_points.append(['2p0', '1'])
+            mass_points.append(['2p0', '10'])
+            mass_points.append(['2p0', '100'])
+            mass_points.append(['2p5', '1'])
+            mass_points.append(['2p5', '10'])
+            mass_points.append(['2p5', '100'])
+            mass_points.append(['3p0', '1'])
+            mass_points.append(['3p0', '10'])
+            mass_points.append(['3p0', '100'])
+            mass_points.append(['4p0', '1'])
+            mass_points.append(['4p0', '10'])
+            mass_points.append(['4p0', '100'])
+            mass_points.append(['5p0', '1'])
+            mass_points.append(['5p0', '10'])
+            mass_points.append(['5p0', '100'])
+            mass_points.append(['6p0', '1'])
+            mass_points.append(['6p0', '10'])
+            mass_points.append(['6p0', '100'])
+            mass_points.append(['7p0', '1'])
+            mass_points.append(['7p0', '10'])
+            mass_points.append(['7p0', '100'])
+            mass_points.append(['8p0', '1'])
+            mass_points.append(['8p0', '10'])
+            mass_points.append(['8p0', '100'])
+            mass_points.append(['10p0', '1'])
+            mass_points.append(['10p0', '10'])
+            mass_points.append(['10p0', '100'])
+            mass_points.append(['12p0', '1'])
+            mass_points.append(['12p0', '10'])
+            mass_points.append(['12p0', '100'])
+            mass_points.append(['14p0', '1'])
+            mass_points.append(['14p0', '10'])
+            mass_points.append(['14p0', '100'])
+            mass_points.append(['16p0', '1'])
+            mass_points.append(['16p0', '10'])
+            mass_points.append(['16p0', '100'])
+            mass_points.append(['20p0', '1'])
+            mass_points.append(['20p0', '10'])
+            mass_points.append(['20p0', '100'])
+            mass_points.append(['22p0', '1'])
+            mass_points.append(['22p0', '10'])
+            mass_points.append(['22p0', '100'])
+            mass_points.append(['24p0', '1'])
+            mass_points.append(['24p0', '10'])
+            mass_points.append(['24p0', '100'])
+            mass_points.append(['30p0', '1'])
+            mass_points.append(['30p0', '10'])
+            mass_points.append(['30p0', '100'])
+            mass_points.append(['30p0', '1000'])
+            mass_points.append(['34p0', '1'])
+            mass_points.append(['34p0', '10'])
+            mass_points.append(['34p0', '100'])
+            mass_points.append(['34p0', '1000'])
+            mass_points.append(['40p0', '1'])
+            mass_points.append(['40p0', '10'])
+            mass_points.append(['40p0', '100'])
+            mass_points.append(['40p0', '1000'])
+            mass_points.append(['44p0', '1'])
+            mass_points.append(['44p0', '10'])
+            mass_points.append(['44p0', '100'])
+            mass_points.append(['44p0', '1000'])
+            mass_points.append(['50p0', '1'])
+            mass_points.append(['50p0', '10'])
+            mass_points.append(['50p0', '100'])
+            mass_points.append(['50p0', '1000'])
+            ## Extension
+            #mass_points.append(['1p5', '1000'])
+            mass_points.append(['2p0', '1000'])
+            mass_points.append(['2p5', '1000'])
+            mass_points.append(['3p0', '1000'])
+            mass_points.append(['4p0', '1000'])
+            mass_points.append(['5p0', '1000'])
+            mass_points.append(['6p0', '1000'])
+            mass_points.append(['7p0', '1000'])
+            mass_points.append(['8p0', '1000'])
+            mass_points.append(['10p0', '1000'])
+            mass_points.append(['12p0', '1000'])
+            mass_points.append(['14p0', '1000'])
+            mass_points.append(['16p0', '1000'])
+            mass_points.append(['20p0', '1000'])
+            mass_points.append(['22p0', '1000'])
+            mass_points.append(['24p0', '1000'])
+            for [m,t] in mass_points:
+                config_list.append(config)
+                config_list[-1].JobType.pyCfgParams=["era={}".format(era),"data=False",]
+                if era=="2022":
+                    dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22DRPremix-124X_mcRun3_2022_realistic_v12-v2/AODSIM'.format(m, t)
+                    config_list[-1].Data.inputDataset = dataset_name
+                elif era=="2022postEE":
+                    dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM'.format(m, t)
+                    config_list[-1].Data.inputDataset = dataset_name
+                elif era=="2023":
+                    #dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23DRPremix-130X_mcRun3_2023_realistic_v15-v2/AODSIM'.format(m, t)
+                    dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23DRPremix-130X_mcRun3_2023_realistic_v14-v2/AODSIM'.format(m, t)
+                    config_list[-1].Data.inputDataset = dataset_name
+                elif era=="2023BPix":
+                    #dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23BPixDRPremix-130X_mcRun3_2023_realistic_postBPix_v6-v2/AODSIM'.format(m, t)
+                    dataset_name = '/HTo2ZdTo2mu2x_MZd-{}_ctau-{}mm_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer23BPixDRPremix-130X_mcRun3_2023_realistic_postBPix_v2-v2/AODSIM'.format(m, t)
+                    config_list[-1].Data.inputDataset = dataset_name
+                config_list[-1].General.requestName = 'centralSkim__{}_{}_m-{}_ctau-{}mm_{}'.format(signal, era, m, t, ntuple_version)
+                print(config)
+                crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
     elif "BToPhiExtra" in sys.argv[2]:
         config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_BToPhiExtra_" + str(year) + "_v"+ntuple_version 
         config.Data.publication = False
@@ -370,7 +392,7 @@ if (len(sys.argv)>2):
                 crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
     elif "DQCD_sig_private" in sys.argv[2]:
         # Private ScenarioA signals produced by garciaja, published to phys03/USER
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private_v'+ntuple_version
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private'
         config.Data.inputDBS = 'phys03'
         config.Data.splitting = 'FileBased'
         config.Data.unitsPerJob = int(10)
@@ -397,7 +419,7 @@ if (len(sys.argv)>2):
             except:
                 print('centralSkim__{}_{}_mpi-{}_mA-{}_ctau-{}mm_{} cant be launched! Skipping...'.format(model_name, era, mpi, mA, t, ntuple_version))
     elif "DQCD_sig" in sys.argv[2]:
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_v'+ntuple_version
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024'
         #config.Data.inputDBS = 'phys03'
         config.Data.inputDBS = 'global'
         #config.Data.splitting = 'FileBased'
@@ -643,7 +665,7 @@ if (len(sys.argv)>2):
     elif "DQCD_bkg" in sys.argv[2]:
         if era != "2024":
             print("DQCD_bkg only supported for era=2024"); quit()
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v'+ntuple_version
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_dqcd'
         config.Data.inputDBS = 'global'
         config.Data.splitting = 'EventAwareLumiBased'
         config.Data.unitsPerJob = int(10e4)
@@ -669,7 +691,7 @@ if (len(sys.argv)>2):
         if era != "2024":
             print("minBias_2024 only supported for era=2024"); quit()
         ntuple_version_mb = "_minBias_2024"
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v' + ntuple_version_mb
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_minBias'
         config.Data.inputDBS = 'global'
         config.Data.splitting = 'FileBased'
         config.Data.unitsPerJob = 10
