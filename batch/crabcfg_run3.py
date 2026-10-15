@@ -25,6 +25,9 @@ config.JobType.pyCfgParams=["era={}".format(era),"data=False",]
 if era in ["2022B", "2022C", "2022D", "2022E", "2022F", "2022G", "2023B", "2023C", "2023D", "2024C", "2024D", "2024E", "2024F", "2024G", "2024H", "2024I"]:
     print("Era identified")
     data=True
+if era in ["2025B", "2025C", "2025D", "2025E", "2025F", "2025G"]:
+    print("Era identified (2025)")
+    data=True
 
 
 extra=""
@@ -55,6 +58,11 @@ elif(data): #other data
     config.JobType.pyCfgParams=["era={}".format(era),"data=True",]
 else:
     quit()
+
+if (data and year==2025 and len(sys.argv)>2 and "PFMonitor" not in sys.argv[2]):
+    extra=sys.argv[2]
+    config.Data.inputDataset = '/{}/Run{}-v1/HLTSCOUT'.format(extra, era)
+    config.JobType.pyCfgParams=["era={}".format(era+"-"+extra),"data=True",]
 
 ntuple_version = "2p0"
 
@@ -110,4 +118,7 @@ config.Data.publication = False
 config.Site.storageSite = "T2_US_UCSD"
 
 print(config)
+if (year==2025 and os.environ.get("CRAB_DRYRUN", "0")=="1"):
+    crabCommand('submit', config = config, dryrun = True)
+    quit()
 crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test

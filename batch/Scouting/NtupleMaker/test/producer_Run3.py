@@ -54,6 +54,8 @@ if opts.data:
         #gtag="130X_dataRun3_HLT_frozen_v3" # latest HLT GT (CMSSW>=13_0_10)
     elif '2024' in opts.era:
         gtag = "140X_dataRun3_Prompt_v4"
+    elif '2025' in opts.era:
+        gtag = "150X_dataRun3_Prompt_v1"
 else:
     if '2022' in opts.era:
         if not 'postEE' in opts.era:
@@ -255,6 +257,29 @@ elif ('2023' in opts.era) and ('2023C-triggerV10' not in opts.era):
             "L1_SingleEG34er2p5", "L1_SingleEG36er2p5", "L1_SingleEG38er2p5", "L1_SingleEG40er2p5", "L1_SingleJet160er2p5", "L1_SingleJet180", "L1_SingleJet200", "L1_SingleTau120er2p1", "L1_SingleTau130er2p1", "L1_SingleEG42er2p5", "L1_SingleEG45er2p5", "L1_SingleEG60"
         ]        
         L1Info = list(set(L1Info))
+elif '2025' in opts.era:
+    L1Info = [
+        "L1_DoubleMu_15_7",
+        "L1_DoubleMu4p5er2p0_SQ_OS_Mass_Min7",
+        "L1_DoubleMu4p5er2p0_SQ_OS_Mass_7to18",
+        "L1_DoubleMu8_SQ",
+        "L1_DoubleMu4er2p0_SQ_OS_dR_Max1p6",
+        "L1_DoubleMu0er1p4_SQ_OS_dR_Max1p4",
+        "L1_DoubleMu4p5_SQ_OS_dR_Max1p2",
+        "L1_DoubleMu0_Upt15_Upt7",
+        "L1_DoubleMu0_Upt6_IP_Min1_Upt4",
+        "L1_DoubleMu0_Upt6",
+        "L1_DoubleMu0_Upt7",
+        "L1_DoubleMu0_Upt8",
+        "L1_SingleMu10_SQ14_BMTF",
+        "L1_SingleMu11_SQ14_BMTF",
+    ]
+    HLTInfo = [
+        [ 'Run3_DoubleMu_PFScouting',      'DST_PFScouting_DoubleMuon_v*' ],
+        [ 'Run3_DoubleMuNoVtx_PFScouting', 'DST_PFScouting_DoubleMuonNoVtx_v*' ],
+        [ 'Run3_DoubleMuVtx_PFScouting',   'DST_PFScouting_DoubleMuonVtx_v*' ],
+        [ 'Run3_SingleMu_PFScouting',      'DST_PFScouting_SingleMuon_v*' ],
+    ]
 elif '2024' in opts.era or '2025' in opts.era:
     print("Running here")
     # 2024+: unprescaled DoubleMuon (no PixelTracking in path name) + SingleMuon L1/HLT seeds
@@ -308,6 +333,13 @@ process.triggerMaker = cms.EDProducer("TriggerMaker",
         ReadPrescalesFromFile = cms.bool(False),
         l1Seeds = cms.vstring(L1Info),
         )
+
+if '2025' in opts.era:
+    process.triggerMaker.triggerConfiguration.throw = cms.bool(False)
+    if opts.data:
+        process.triggerMaker.AlgInputTag       = cms.InputTag("gtStage2Digis")
+        process.triggerMaker.l1tAlgBlkInputTag = cms.InputTag("gtStage2Digis")
+        process.triggerMaker.l1tExtBlkInputTag = cms.InputTag("gtStage2Digis")
 
 if '2024' in opts.era or '2025' in opts.era:
 
