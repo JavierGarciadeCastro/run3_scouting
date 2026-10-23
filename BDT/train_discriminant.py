@@ -16,7 +16,7 @@ train/test split, so their outputs can be compared directly. The test rows
 are never used for training (the PNN takes its validation set for early
 stopping from the TRAINING rows).
 
-Outputs, under BDT/<out-name>[_PNN][_cond<Vars>][_L1req]/{Scenario<S>|HAHM|Scenario<S>_HAHM}[_holdout-...]/:
+Outputs, under BDT/{BDT,PNN}_output/{parametrized,unparametrized}/<signal>[_<cond vars>][_L1req][_holdout-...][_<out-name>]/ (or --out-dir):
   models/binned_lxy/<model>_lxy_<bin>.{json,pt}   trained model of each bin
   models/binned_lxy/<model>_lxy_<bin>_manifest.json
   feature_importance_by_lxy/feature_importance_lxy_<bin>.{png,txt}
@@ -74,8 +74,20 @@ LXY_LABELS = ["0p0to0p2", "0p2to3p1", "3p1to11p0", "11p0to70p0"]
 LXY_PRETTY = {label: f"[{LXY_BINS[i]:g}, {LXY_BINS[i + 1]:g}]" for i, label in enumerate(LXY_LABELS)}
 
 # Conditional (parametric) features: --cond-var name -> dataframe column / output tag
-COND_COLUMN = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd"}
-COND_TAG    = {"ctau": "Ctau",       "mratio": "Mratio",       "mpi": "Mpi",       "mzd": "Mzd"}
+COND_COLUMN = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd",
+               "mdimuon": "param_mdimuon"}
+COND_TAG    = {"ctau": "Ctau",       "mratio": "Mratio",       "mpi": "Mpi",       "mzd": "Mzd",
+               "mdimuon": "Mdimuon"}
+LOG_PARAM_COLUMNS = {"param_ctau", "param_mdimuon"}
+RESONANCE_WINDOWS = [(0.41, 0.50), (0.51, 0.59), (0.731, 0.83), (0.96, 1.08), (2.91, 3.27), (3.47, 3.89),
+                     (8.99, 9.91), (9.64, 10.56), (9.90, 10.78), (81.0, 101.0)]
+
+def in_resonance_window(mass):
+    mass = np.asarray(mass)
+    hit = np.zeros(len(mass), dtype=bool)
+    for lo, hi in RESONANCE_WINDOWS:
+        hit |= (mass > lo) & (mass < hi)
+    return hit
 MASS_PARAMS = {"dqcd": ("mpi", "mA"), "hahm": ("mzd",)}
 
 MIN_TRAIN_EVENTS_PER_BIN = 20
@@ -173,6 +185,9 @@ def parse_args():
                         help="Train only on this signal mass point (all its ctau values), e.g. 4:1.33 (dqcd) or 5 (hahm).")
     parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] | mzd[:ctau]",
                         help="Signal point(s) excluded from training (they go to the test set only).")
+    parser.add_argument("--resonance-veto", action=argparse.BooleanOptionalAction, default=True,
+                        help="Drop events whose SV1 dimuon mass is in a known-resonance window (as in the filler), "
+                             "signal and background, so the resonances stay an independent control sample.")
     parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                         help="Keep only events with passL1 != 0.")
 
@@ -181,7 +196,7 @@ def parse_args():
                         help="Add the signal parameter(s) of --cond-var as input features.")
     parser.add_argument("--cond-var", choices=list(COND_COLUMN), nargs="+", default=None,
                         help="Signal parameter(s) used as inputs with --conditional. "
-                             "Default: mratio for dqcd, mzd for hahm, ctau for both.")
+                             "Default: mratio for dqcd, mzd for hahm, mdimuon (mA for dqcd, mZd for hahm) for both.")
     parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
                         help="Nominal mA/mpi values onto which signal points are snapped (cond-var mratio).")
 
@@ -194,8 +209,11 @@ def parse_args():
                              "All signal and all other bins are used. 0 = no cap.")
 
     # --- output ---
-    parser.add_argument("--out-name", default="significance_plots_priv",
-                        help="Base output directory name under BDT/.")
+    parser.add_argument("--out-name", default=None,
+                        help="Optional tag appended to the output folder name "
+                             "(BDT/{BDT,PNN}_output/{parametrized,unparametrized}/<signal>[_<cond vars>]..._<tag>).")
+    parser.add_argument("--out-dir", default=None,
+                        help="Explicit output folder; overrides the automatic BDT/{BDT,PNN}_output/... location.")
 
     # --- PNN only ---
     pnn = parser.add_argument_group("PNN options (only used with --model pnn)")
@@ -233,6 +251,7 @@ class Config:
     mass_point: tuple
     holdout: list
     require_l1: bool
+    resonance_veto: bool
     conditional: bool
     cond_vars: list          # e.g. ["mratio", "ctau"]
     cond_columns: list       # e.g. ["param_mratio", "param_ctau"]; empty if not conditional
@@ -246,9 +265,9 @@ class Config:
 
 def build_config(args):
     signal_models = ["dqcd", "hahm"] if args.signal == "both" else [args.signal]
-    cond_vars     = list(args.cond_var or {"hahm": ["mzd"], "both": ["ctau"]}.get(args.signal, ["mratio"]))
-    if args.signal == "both" and args.conditional and cond_vars != ["ctau"]:
-        raise SystemExit("--signal both only supports --cond-var ctau (the mass parameters exist for one model only)")
+    cond_vars     = list(args.cond_var or {"hahm": ["mzd"], "both": ["mdimuon"]}.get(args.signal, ["mratio"]))
+    if args.signal == "both" and args.conditional and not set(cond_vars) <= {"mdimuon", "ctau"}:
+        raise SystemExit("--signal both only supports --cond-var mdimuon and/or ctau (the other parameters exist for one model only)")
     n_mass        = len(MASS_PARAMS[args.signal]) if args.signal != "both" else None
     default_dirs  = {"dqcd": f"tuples_DQCD_Scenario{args.scenario}", "hahm": "tuples_hahm"}
     signal_dirs   = {m: TUPLES_BASE / (args.sig_dir if args.signal != "both" and args.sig_dir else default_dirs[m])
@@ -275,13 +294,19 @@ def build_config(args):
         mass_point=tuple(float(x) for x in args.mass_point.split(":")) if args.mass_point else None,
         holdout=parse_holdout(args.holdout, n_mass) if args.holdout else [],
         require_l1=args.require_l1,
+        resonance_veto=args.resonance_veto,
         conditional=args.conditional,
         cond_vars=cond_vars,
         cond_columns=[COND_COLUMN[v] for v in cond_vars] if args.conditional else [],
         mratio_grid=np.array(sorted(set(args.mratio_grid)), dtype=np.float64),
         random_splitting=args.do_random_splitting,
         train_max_prompt_bkg=max(0, args.train_max_prompt_bkg),
-        out_dir=HERE / (args.out_name + model_tag + cond_tag + l1_tag) / f"{signal_tag}{holdout_tag}",
+        out_dir=(Path(args.out_dir).resolve() if args.out_dir else
+                 HERE / ("PNN_output" if args.model == "pnn" else "BDT_output")
+                      / ("parametrized" if args.conditional else "unparametrized")
+                      / (args.signal + (args.scenario if args.signal != "hahm" and args.scenario != "A" else "")
+                         + ("_" + "_".join(cond_vars) if args.conditional else "")
+                         + l1_tag + holdout_tag + (f"_{args.out_name}" if args.out_name else ""))),
         pnn=pnn,
         device=args.device,
     )
@@ -351,22 +376,30 @@ def read_tuple(path, cfg, step=2_000_000):
     with uproot.open(path) as f:
         tree     = f["tuples"]
         branches = [b for b in BRANCHES_TO_READ if b in set(tree.keys())]
-        values   = np.empty((tree.num_entries, len(branches)), dtype=np.float32)
+        # evtn is only used for the train/test split; int64 because float32 is not exact above ~16.7M
+        evtn     = None if cfg.random_splitting else tree["evtn"].array(library="np").astype(np.int64)
+        keep     = None if evtn is None else (evtn % 10) < 7
+        n_rows   = tree.num_entries if keep is None else int(keep.sum())
+        values   = np.empty((n_rows, len(branches)), dtype=np.float32)
 
-        row = 0
+        start = row = 0
         for chunk in tree.iterate(branches, library="np", step_size=step, decompression_executor=READ_EXECUTOR):
-            n = len(chunk[branches[0]])
+            n   = len(chunk[branches[0]])
+            sel = slice(None) if keep is None else keep[start:start + n]
+            m   = n if keep is None else int(sel.sum())
             for j, branch in enumerate(branches):
-                values[row:row + n, j] = chunk[branch]
-            row += n
+                values[row:row + m, j] = chunk[branch][sel]
+            row   += m
+            start += n
 
         df = pd.DataFrame(values, columns=branches, copy=False)
-        if not cfg.random_splitting:
-            # evtn is only used for the train/test split; int64 because float32 is not exact above ~16.7M
-            df["evtn"] = tree["evtn"].array(library="np").astype(np.int64)
+        if evtn is not None:
+            df["evtn"] = evtn[keep]
 
     if cfg.require_l1:
         df = df[df["passL1"] > 0.5].reset_index(drop=True)
+    if cfg.resonance_veto:
+        df = df[~in_resonance_window(df["SV1_mass"].to_numpy())].reset_index(drop=True)
     return df
 
 
@@ -388,6 +421,7 @@ def load_signal(cfg, signal_files):
         df["param_ctau"]   = point[-1]
         if sig_model == "dqcd":
             df["param_mratio"] = snap_mratio(point[0], point[1], cfg.mratio_grid)
+        df["param_mdimuon"] = point[1] if sig_model == "dqcd" else point[0]
         df["sig_model"]    = np.int8(cfg.signal_models.index(sig_model))
         df["label"]        = 1
         frames.append(df)
@@ -532,7 +566,7 @@ PREPROCESS_CLIP              = 5.0
 PREPROCESS_FIT_EVENTS        = 2_000_000
 
 
-def fit_preprocessing(X, seed=RANDOM_SEED):
+def fit_preprocessing(X, seed=RANDOM_SEED, param_idx=(), log_param_idx=()):
     """Fit the input preprocessing on (a random subset of) the training inputs:
     placeholder values (|x| >= 99 occurring exactly in >= 1e-4 of events, e.g. normChi2 = 999)
     become missing with an extra 0/1 input; long-tailed inputs (99.9% quantile of |x| > 20x its
@@ -545,6 +579,9 @@ def fit_preprocessing(X, seed=RANDOM_SEED):
 
     sentinels = []
     for j in range(n_features):
+        if j in param_idx:
+            sentinels.append([])
+            continue
         column = X[:, j]
         large  = column[np.isfinite(column) & (np.abs(column) >= PREPROCESS_SENTINEL_MIN_ABS)]
         values, counts = np.unique(large, return_counts=True)
@@ -564,6 +601,11 @@ def fit_preprocessing(X, seed=RANDOM_SEED):
             median = np.median(magnitude)
             if median > 0 and np.quantile(magnitude, 0.999) / median > PREPROCESS_LOG_TAIL_RATIO:
                 prep["log_scale"][j] = np.quantile(magnitude, 0.1)
+    for j in log_param_idx:
+        magnitude = np.abs(Xc[:, j])
+        magnitude = magnitude[np.isfinite(magnitude) & (magnitude > 0)]
+        if len(magnitude):
+            prep["log_scale"][j] = np.min(magnitude)
 
     with np.errstate(invalid="ignore"):
         for j in np.flatnonzero(prep["log_scale"] > 0):
@@ -729,7 +771,9 @@ def train_pnn(X, y, w, features, cond_columns, hp, device):
     X_val,   y_val,   w_val   = X[val_rows], y[val_rows], w[val_rows]
 
     # 2. Preprocessing (fitted on the training part only)
-    prep    = fit_preprocessing(X_train)
+    param_idx = [features.index(c) for c in cond_columns]
+    prep    = fit_preprocessing(X_train, param_idx=param_idx,
+                                log_param_idx=[features.index(c) for c in cond_columns if c in LOG_PARAM_COLUMNS])
     X_train = preprocess(X_train, prep)
     X_val   = preprocess(X_val, prep)
 
@@ -846,6 +890,7 @@ def write_manifest(path, model_file, lxy_label, features, importance, cfg, signa
         "cond_var":           cfg.cond_vars if cfg.conditional else None,
         "cond_vars":          cfg.cond_columns,
         "require_l1":         cfg.require_l1,
+        "resonance_veto":     cfg.resonance_veto,
         "tuples_subdir":      "+".join(d.name for d in cfg.signal_dirs.values()),
         "lxy_bin":            lxy_label,
         "lxy_range_cm":       [LXY_BINS[i], LXY_BINS[i + 1]],

@@ -66,7 +66,7 @@ _parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] 
                      help="Must match the --holdout used for training.")
 _parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --conditional used for training.")
-_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi", "mzd"], default=None,
+_parser.add_argument("--cond-var", choices=["ctau", "mratio", "mpi", "mzd", "mdimuon"], default=None,
                      nargs="+", help="Must match the --cond-var used for training "
                                      "(default: mratio for dqcd, mzd for hahm).")
 _parser.add_argument("--mratio-grid", type=float, nargs="+", default=[0.33, 0.10],
@@ -83,18 +83,22 @@ _parser.add_argument("--mass-window-rel", type=float, default=0.1,
 _parser.add_argument("--sig-dir", default=None,
                      help="Must match the --sig-dir used for training. Default: "
                           "tuples_DQCD_Scenario<S> for dqcd, tuples_hahm for hahm.")
-_parser.add_argument("--out-name", default="significance_plots_priv",
-                     help="Base output directory of the TRAINING run (models are read from "
-                          "<out-name>.../models/binned_lxy/). Eval plots are written under "
-                          "<that dir>/eval_testonly/. Ignored if --model-dir is given.")
+_parser.add_argument("--out-name", default=None,
+                     help="Tag of the TRAINING run (the --out-name given to training). Without --model-dir the "
+                          "model folder is looked up as BDT/{BDT,PNN}_output/{parametrized,unparametrized}/"
+                          "<signal>[_<cond vars>][_L1req][_holdout-...][_<tag>]. Eval plots are written under "
+                          "<that dir>/eval_testonly/.")
 _parser.add_argument("--model-dir", default=None, metavar="PATH",
                      help="Explicit path to the training run's Scenario output folder (the one "
-                          "containing models/binned_lxy/, e.g. BDT/significance_plots_priv/"
-                          "ScenarioA). Overrides --out-name (no need to reconstruct the path from "
+                          "containing models/binned_lxy/, e.g. BDT/PNN_output/parametrized/"
+                          "dqcd_mratio). Needed for models trained on --signal both. Overrides --out-name (no need to reconstruct the path from "
                           "--conditional/--cond-var/--require-l1/--holdout/--scenario). The "
                           "dataset-related flags (--scenario/--conditional/--cond-var/--holdout/"
                           "--require-l1/--mass-point/--sig-dir/--mratio-grid) must still match "
                           "the training run, since they control the reconstructed train/test split.")
+_parser.add_argument("--resonance-veto", action=argparse.BooleanOptionalAction, default=True,
+                     help="Drop events whose SV1 dimuon mass is in a known-resonance window (as in the filler), "
+                          "signal and background.")
 _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --require-l1 used for training.")
 _parser.add_argument("--do-random-splitting", action=argparse.BooleanOptionalAction, default=False,
@@ -108,6 +112,14 @@ _parser.add_argument("--plot-only", default=None, metavar="mpi:mA | mzd",
                      help="Optional: restrict the final plots (discriminant/significance/limit) "
                           "to this single signal mass point. Does NOT affect data loading or the "
                           "train/test split -- safe to use even for a model trained on many points.")
+_parser.add_argument("--eval-suffix", default="", metavar="TAG",
+                     help="Append _TAG to the eval output folder (eval_testonly_TAG, eval_testonly_on<S>_TAG) "
+                          "so a rerun does not overwrite a previous evaluation.")
+_parser.add_argument("--sig-xsec-hepdata", default=None, metavar="DIR|GLOB",
+                     help="Folder (all *.csv inside) or glob of HEPData CSVs with the previous papers' observed "
+                          "95%% CL limits: B(H->ZdZd) vs mZd per ctau for hahm, the Scenario <S> 2D tables for dqcd, "
+                          "e.g. previous_limits. Signal is normalized to XSEC_H_PB x B_obs instead of 1 pb, so r < 1 "
+                          "means better than that observed limit. Points the tables do not cover stay at 1 pb.")
 _args = _parser.parse_args()
 
 def _resolve_fpr_targets():
@@ -134,8 +146,9 @@ SCENARIO             = _args.scenario
 MODEL_TAG            = f"Scenario{SCENARIO}" if MODEL == "dqcd" else "HAHM"
 use_conditional      = _args.conditional
 COND_VAR             = list(_args.cond_var or (["mzd"] if MODEL == "hahm" else ["mratio"]))
-_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd"}
-_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi", "mzd": "Mzd"}
+_COND_COL_OF         = {"ctau": "param_ctau", "mratio": "param_mratio", "mpi": "param_mpi", "mzd": "param_mzd",
+                        "mdimuon": "param_mdimuon"}
+_COND_TAG_OF         = {"ctau": "Ctau", "mratio": "Mratio", "mpi": "Mpi", "mzd": "Mzd", "mdimuon": "Mdimuon"}
 COND_COL             = [_COND_COL_OF[v] for v in COND_VAR]
 COND_TAG             = ("_cond" + "".join(_COND_TAG_OF[v] for v in COND_VAR) if use_conditional else "")
 MRATIO_GRID          = np.array(sorted(set(_args.mratio_grid)), dtype=np.float64)
@@ -159,6 +172,7 @@ MINBIAS_SUBDIR       = "tuples_minbias"
 TUPLES_SUBDIR        = SIG_SUBDIR
 LUMI_FB = 109.95
 PB_TO_FB = 1.0e3
+XSEC_H_PB = 59.8
 _HERE      = Path(__file__).resolve().parent
 TUPLES_BASE    = Path("/ceph/cms/store/group/Run3Scouting")
 tuples_dir     = TUPLES_BASE / SIG_SUBDIR
@@ -172,7 +186,17 @@ MINBIAS_XSEC = MINBIAS_XSEC_BEFOREFILTER * (MINBIAS_NGEN_AFTERFILTER / MINBIAS_N
 if _args.model_dir is not None:
     OUT_ROOT = Path(_args.model_dir).resolve()
 else:
-    OUT_ROOT = (_HERE / (_args.out_name + COND_TAG + ('_L1req' if REQUIRE_L1 else '')) / f"{MODEL_TAG}{HOLD_TAG}")
+    _leaf = (MODEL + (SCENARIO if MODEL != "hahm" and SCENARIO != "A" else "")
+             + ("_" + "_".join(COND_VAR) if use_conditional else "")
+             + ('_L1req' if REQUIRE_L1 else '') + HOLD_TAG
+             + (f"_{_args.out_name}" if _args.out_name else ""))
+    _cands = [_HERE / top / ("parametrized" if use_conditional else "unparametrized") / _leaf
+              for top in ("BDT_output", "PNN_output")]
+    _found = [c for c in _cands if (c / "models" / "binned_lxy").is_dir()]
+    if len(_found) != 1:
+        raise SystemExit(f"{'Both' if _found else 'Neither'} of {', '.join(str(c) for c in _cands)} "
+                         f"{'exist' if _found else 'exists'} -- pass the model folder with --model-dir.")
+    OUT_ROOT = _found[0]
 _BINMODEL_DIR = OUT_ROOT / "models" / "binned_lxy"
 if not _BINMODEL_DIR.is_dir():
     raise SystemExit(f"No trained models found at {_BINMODEL_DIR} -- check --model-dir (or "
@@ -185,8 +209,12 @@ with open(_train_manifests[0]) as _mf:
 _train_scen = _train_man.get('scenario', 'A')
 TRAIN_MODEL_TAG = {"hahm": "HAHM", "both": f"Scenario{_train_scen}_HAHM"}.get(
     _train_man.get("model", "dqcd"), f"Scenario{_train_scen}")
+DISC_LABEL = {("bdt", False): "BDT", ("bdt", True): "pBDT", ("pnn", False): "NN", ("pnn", True): "PNN"}[
+    (_train_man.get("model_type", "bdt"), bool(_train_man.get("conditional", False)))]
 
 EVAL_ROOT = OUT_ROOT / ("eval_testonly" if TRAIN_MODEL_TAG == MODEL_TAG else f"eval_testonly_on{MODEL_TAG}")
+if _args.eval_suffix:
+    EVAL_ROOT = EVAL_ROOT.with_name(f"{EVAL_ROOT.name}_{_args.eval_suffix}")
 if TRAIN_MODEL_TAG != MODEL_TAG:
     print(f"Models trained on {TRAIN_MODEL_TAG}, evaluated on {MODEL_TAG} signal -> {EVAL_ROOT}")
 if ADAPTIVE_FPR:
@@ -204,6 +232,7 @@ def _mratio(mpi, mA):
 
 def _theta_of(key):
     _val_of = {"ctau": key[-1], **dict(zip(MASS_PARAMS, key[:-1]))}
+    _val_of["mdimuon"] = key[1] if MODEL == "dqcd" else key[0]
     if MODEL == "dqcd":
         _val_of["mratio"] = _mratio(key[0], key[1])
     return tuple(_val_of[v] for v in COND_VAR)
@@ -316,6 +345,187 @@ for fpath, key in sig_file_params:
         n = next(iter(_cands))
     SIG_NGEN[key] = n
 
+def _hepdata_files(pattern):
+    if os.path.isdir(pattern):
+        pattern = os.path.join(pattern, "*.csv")
+    return sorted(glob.glob(pattern))
+
+def _hepdata_observed_rows(text):
+    rows, on = [], False
+    for line in text.splitlines():
+        if line.startswith("#: Limit,"):
+            on = "Observed" in line
+            continue
+        if line.startswith("$"):
+            on = on or "Observed" in line
+            if "Expected" in line:
+                on = False
+            continue
+        if on and line.strip() and not line.startswith("#"):
+            rows.append(tuple(float(x) for x in line.split(",")))
+    return rows
+
+def _read_hepdata_hahm(pattern):
+    tables = {}
+    for path in _hepdata_files(pattern):
+        text = open(path).read()
+        m_ct = re.search(r"\\tau_\{0\}\^\{Z_\{D\}\} = ([\d.]+)\$? cm", text)
+        if m_ct:
+            tables[float(m_ct.group(1)) * 10.0] = sorted((r[0], r[1]) for r in _hepdata_observed_rows(text))
+    return tables
+
+def _read_hepdata_dqcd(pattern, scenario):
+    table = {}
+    for path in _hepdata_files(pattern):
+        text = open(path).read()
+        m_nm = re.search(r"#: name: Scenario (\w+) 2D limits, \$m_\{\\tilde\{\\pi\}_\{3\}\}=(\d+)m_\{A'\}\$", text)
+        if not m_nm or m_nm.group(1) != scenario:
+            continue
+        ratio = int(m_nm.group(2))
+        for mA, ctau, br in _hepdata_observed_rows(text):
+            table[(ratio, round(mA, 3), round(ctau, 3))] = br
+    return table
+
+_PREV_SRC_RANK = {"table": 0, "interp": 1, "long-ctau": 2, "reference": 3}
+
+def _worst_src(*srcs):
+    return max(srcs, key=_PREV_SRC_RANK.get)
+
+def _loglog(x0, y0, x1, y1, x):
+    f = (np.log(x) - np.log(x0)) / (np.log(x1) - np.log(x0))
+    return float(np.exp(np.log(y0) + f * (np.log(y1) - np.log(y0))))
+
+def _prev_limit_in_mass(rows, m, max_rel_gap=0.1, min_extrap_span=1.2):
+    for x, v in rows:
+        if np.isclose(x, m, rtol=1e-4):
+            return v, "table"
+    if len(rows) < 2:
+        return None
+    for (x0, v0), (x1, v1) in zip(rows, rows[1:]):
+        if x0 < m < x1:
+            return _loglog(x0, v0, x1, v1, m), ("interp" if (x1 - x0) <= max_rel_gap * x0 else "reference")
+    end = rows[0] if m < rows[0][0] else rows[-1]
+    others = rows[1:] if end is rows[0] else rows[-2::-1]
+    nb = next((r for r in others if abs(np.log(r[0] / end[0])) >= np.log(min_extrap_span)), others[-1])
+    return _loglog(end[0], end[1], nb[0], nb[1], m), "reference"
+
+def _prev_limit(slices, m, c):
+    prof = []
+    for c_s, rows in slices.items():
+        r = _prev_limit_in_mass(rows, m)
+        if r is not None:
+            prof.append((c_s, r[0], r[1]))
+    if not prof:
+        return None
+    exact = [p for p in prof if p[2] == "table"]
+    prof = sorted(exact or prof)
+    for c_s, v, src in prof:
+        if np.isclose(c_s, c, rtol=1e-4):
+            return v, src
+    for (c0, v0, s0), (c1, v1, s1) in zip(prof, prof[1:]):
+        if c0 < c < c1:
+            return _loglog(c0, v0, c1, v1, c), _worst_src(s0, s1, "interp")
+    if c > prof[-1][0]:
+        c_s, v, src = prof[-1]
+        return v * c / c_s, _worst_src(src, "long-ctau")
+    c_s, v, src = prof[0]
+    return v * c_s / c, "reference"
+
+SIG_XSEC_PB = {}
+SIG_XSEC_SRC = {}
+if _args.sig_xsec_hepdata:
+    if MODEL == "hahm":
+        _hep = _read_hepdata_hahm(_args.sig_xsec_hepdata)
+        if not _hep:
+            raise SystemExit(f"--sig-xsec-hepdata: no HAHM tables in {_args.sig_xsec_hepdata}")
+        print(f"[sig-xsec] HAHM observed B(H->ZdZd) tables for ctau = "
+              f"{', '.join(f'{c:g}' for c in sorted(_hep))} mm; sigma = {XSEC_H_PB} pb x B_obs")
+        _slices_of = lambda key: _hep
+    else:
+        _hep2d = _read_hepdata_dqcd(_args.sig_xsec_hepdata, SCENARIO)
+        if not _hep2d:
+            raise SystemExit(f"--sig-xsec-hepdata: no Scenario {SCENARIO} 2D tables in {_args.sig_xsec_hepdata}")
+        _hep = {}
+        for (ratio, mA, ctau), br in _hep2d.items():
+            _hep.setdefault(ratio, {}).setdefault(ctau, []).append((mA, br))
+        for ratio in _hep:
+            for ctau in _hep[ratio]:
+                _hep[ratio][ctau].sort()
+        print(f"[sig-xsec] Scenario {SCENARIO} observed B(H->psipsi) 2D tables, mpi/mA = "
+              f"{sorted(_hep)}; sigma = {XSEC_H_PB} pb x B_obs")
+        _slices_of = lambda key: _hep.get(int(round(key[0] / key[1])), {})
+    _mass_of = (lambda key: key[0]) if MODEL == "hahm" else (lambda key: key[1])
+    for key in sorted(SIG_NGEN):
+        r = _prev_limit(_slices_of(key), _mass_of(key), key[-1])
+        if r is not None:
+            SIG_XSEC_PB[key] = XSEC_H_PB * r[0]
+            SIG_XSEC_SRC[key] = r[1]
+    _by_src = Counter(SIG_XSEC_SRC.values())
+    _missing = sorted(k for k in SIG_NGEN if k not in SIG_XSEC_PB)
+    print(f"[sig-xsec] {len(SIG_XSEC_PB)}/{len(SIG_NGEN)} points normalized to the previous observed limit: "
+          + ", ".join(f"{_by_src[s]} {s}" for s in _PREV_SRC_RANK if _by_src[s])
+          + (f"; {len(_missing)} stay at 1 pb" if _missing else ""))
+    os.makedirs(EVAL_ROOT, exist_ok=True)
+    with open(EVAL_ROOT / "sig_xsec_used.csv", "w") as _fx:
+        _fx.write(",".join(list(MASS_PARAMS) + ["ctau_mm", "sigma_pb", "B_prev_obs", "source"]) + "\n")
+        for key in sorted(SIG_NGEN):
+            sig = SIG_XSEC_PB.get(key)
+            _fx.write(",".join([f"{v:g}" for v in key]
+                               + ([f"{sig:.6g}", f"{sig / XSEC_H_PB:.6g}", SIG_XSEC_SRC[key]] if sig else ["1", "", "none"])) + "\n")
+    print(f"[sig-xsec] per-point normalization written to {EVAL_ROOT / 'sig_xsec_used.csv'}")
+
+_PREV_SRC_STYLE = {
+    "table":     dict(marker="o", color="#1f77b4", mfc="#1f77b4", label="HEPData table"),
+    "interp":    dict(marker="o", color="#1f77b4", mfc="white",   label="interpolated"),
+    "long-ctau": dict(marker="^", color="#ff7f0e", mfc="#ff7f0e", label=r"scaled $\propto c\tau$ (beyond table)"),
+    "reference": dict(marker="X", color="#7f7f7f", mfc="#7f7f7f", label="reference only (no previous limit)"),
+}
+
+def _new_limit_figure():
+    if not SIG_XSEC_PB:
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        return fig, ax, None
+    fig, (ax, ax_br) = plt.subplots(2, 1, figsize=(FIGSIZE[0], FIGSIZE[1] * 1.5), sharex=True,
+                                    gridspec_kw={"height_ratios": [3, 1.4], "hspace": 0.06})
+    return fig, ax, ax_br
+
+def _draw_prev_br_panel(ax, ax_br, keys):
+    if ax_br is None:
+        return
+    from matplotlib.transforms import blended_transform_factory
+    ax.axhline(1.0, color="black", linestyle=":", linewidth=1.2, zorder=1)
+    ax.set_xlabel("")
+    pts = sorted(((k[-1], SIG_XSEC_PB.get(k), SIG_XSEC_SRC.get(k)) for k in keys), key=lambda t: t[0])
+    have = [(c, sig / XSEC_H_PB, src) for c, sig, src in pts if sig]
+    if have:
+        ax_br.plot([c for c, _, _ in have], [b for _, b, _ in have], color="0.6", linewidth=1.0, zorder=1)
+    used = set()
+    for c, b, src in have:
+        st = _PREV_SRC_STYLE.get(src, _PREV_SRC_STYLE["reference"])
+        ax_br.plot([c], [b], linestyle="none", markersize=8, markeredgewidth=1.5, zorder=3,
+                   marker=st["marker"], color=st["color"], mfc=st["mfc"],
+                   label=(st["label"] if src not in used else None))
+        used.add(src)
+        ax_br.annotate(f"{b:.1e}", (c, b), textcoords="offset points", xytext=(0, 7),
+                       ha="center", fontsize=7, color=st["color"])
+    nopb = [c for c, sig, _ in pts if not sig]
+    if nopb:
+        tr = blended_transform_factory(ax_br.transData, ax_br.transAxes)
+        ax_br.plot(nopb, [0.08] * len(nopb), transform=tr, linestyle="none", marker="v",
+                   color="#d62728", markersize=8, label="not normalised (1 pb)")
+    ax_br.set_xscale("log")
+    ax_br.set_yscale("log")
+    if have:
+        lo, hi = min(b for _, b, _ in have), max(b for _, b, _ in have)
+        ax_br.set_ylim(lo / 3.0, hi * 4.0)
+    ax_br.set_xlabel(r"$c\tau$ [mm]")
+    ax_br.set_ylabel((r"$\mathcal{B}_{prev}(H\to Z_{D}Z_{D})$" if MODEL == "hahm"
+                      else r"$\mathcal{B}_{prev}(H\to\psi\bar{\psi})$") + "\nused (obs.)", fontsize=12)
+    sec = ax_br.secondary_yaxis("right", functions=(lambda b: b * XSEC_H_PB, lambda x: x / XSEC_H_PB))
+    sec.set_ylabel(r"$\sigma_{sig}$ [pb]", fontsize=12)
+    ax_br.legend(loc="best", fontsize=9, framealpha=0.9)
+    ax_br.tick_params(direction="in", top=True, which="both")
+
 # ----------------------------------------
 # BDT variables (must match workingpoint.py exactly)
 # ----------------------------------------
@@ -367,7 +577,16 @@ def read_flat(path, step=2_000_000):
             df['evtn'] = t['evtn'].array(library='np').astype(np.int64)
     return df
 
+RESONANCE_WINDOWS = [(0.41, 0.50), (0.51, 0.59), (0.731, 0.83), (0.96, 1.08), (2.91, 3.27), (3.47, 3.89),
+                     (8.99, 9.91), (9.64, 10.56), (9.90, 10.78), (81.0, 101.0)]
+
 def apply_l1(df, src):
+    if _args.resonance_veto:
+        _m = df['SV1_mass'].to_numpy()
+        _hit = np.zeros(len(df), dtype=bool)
+        for _lo, _hi in RESONANCE_WINDOWS:
+            _hit |= (_m > _lo) & (_m < _hi)
+        df = df[~_hit].reset_index(drop=True)
     if not REQUIRE_L1:
         return df
     return df[df['passL1'] > 0.5].reset_index(drop=True)
@@ -399,6 +618,7 @@ for fpath, key in sig_file_params:
         df[f'param_{p}'] = float(v)
     if MODEL == "dqcd":
         df['param_mratio'] = _mratio(key[0], key[1])
+    df['param_mdimuon'] = float(key[1] if MODEL == "dqcd" else key[0])
     df['label']        = 1
     sig_frames.append(df)
 df_sig = pd.concat(sig_frames, ignore_index=True)
@@ -749,7 +969,8 @@ BKG_EDGE    = "#2f5f5d"
 disc_bins   = np.linspace(0.0, 1.0, 51)
 disc_widths = np.diff(disc_bins)
 def _theta_tex(theta):
-    _tex = {"ctau": r"c\tau", "mratio": r"m_{A'}/m_{\pi_3}", "mpi": r"m_{\pi_3}", "mzd": r"m_{Z_d}"}
+    _tex = {"ctau": r"c\tau", "mratio": r"m_{A'}/m_{\pi_3}", "mpi": r"m_{\pi_3}", "mzd": r"m_{Z_d}",
+            "mdimuon": r"m_{\mu\mu}"}
     return ", ".join(rf"${_tex[v]}={t:g}$" for v, t in zip(COND_VAR, theta))
 
 for lxy_label, roc_t in _bin_roc_test.items():
@@ -861,7 +1082,7 @@ def _sig_s_at(key, t, lxy_label):
         return None
     n_raw   = _counts_above_thr(sc, t)
     sig_eff = n_raw / (SIG_NGEN[key] * frac)
-    return PB_TO_FB * LUMI_FB * sig_eff, n_raw
+    return SIG_XSEC_PB.get(key, 1.0) * PB_TO_FB * LUMI_FB * sig_eff, n_raw
 
 # ---------------------------------------------------------------------------
 # Adaptive FPR grid: pick 4 targets from the NORMALIZED background yield
@@ -1113,7 +1334,7 @@ if _args.significance:
             return (_f(lo, digits) if lo == hi
                     else f'{_f(lo, digits - 1)}–{_f(hi, digits - 1)}')
 
-        fig, ax = plt.subplots(figsize=FIGSIZE)
+        fig, ax, ax_br = _new_limit_figure()
         r_max = 0.0
         r_min = np.inf
         fpr_handles = []
@@ -1135,7 +1356,8 @@ if _args.significance:
         ax.set_xscale('log')
         ax.set_yscale('log')
         ax.set_xlabel(r'$c\tau$ [mm]')
-        ax.set_ylabel(r'Expected asymptotic limit on $r$ (95% CL)')
+        ax.set_ylabel('Asymptotic limits')
+        ax.set_title(DISC_LABEL, loc='left', fontsize=15)
         _ncol  = 2 if _MANY_FPR else 1
         _nrows = int(np.ceil(len(fpr_handles) / _ncol))
         _head  = 1.45 + (0.10 if _MANY_FPR else 0.15) * max(0, _nrows - 1)
@@ -1163,6 +1385,7 @@ if _args.significance:
                          title_fontsize=10)
         ax.add_artist(leg1)
         ax.tick_params(direction='in', top=True, right=True, which='both')
+        _draw_prev_br_panel(ax, ax_br, keys)
         fig.tight_layout()
         _fout = _mp_dir(masses, lxy_label) / f'limit_vs_ctau_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
@@ -1348,7 +1571,7 @@ if _args.significance:
         order = np.argsort(np.array(ctaus, dtype=float))
         x = np.array(ctaus, dtype=float)[order]
 
-        fig, ax = plt.subplots(figsize=FIGSIZE)
+        fig, ax, ax_br = _new_limit_figure()
         r_max, r_min = 0.0, np.inf
 
         def _track(r):
@@ -1370,17 +1593,28 @@ if _args.significance:
                          markersize=5, linewidth=1.2, linestyle='--', alpha=0.85, zorder=2,
                          label=rf'FPR$={_fpr_tex(f_t)}$ (shared)')
 
-        for r_by_ctau, label, color, marker in (
-                (majority_r, 'Majority-vote FPR per bin', '#1f77b4', 's'),
-                (perlifetime_r, 'Per-lifetime best FPR per bin', '#d62728', 'o')):
+        _curves = ((majority_r, 'Majority-vote FPR per bin', '#1f77b4', 's'),
+                   (perlifetime_r, 'Per-lifetime best FPR per bin', '#d62728', 'o'))
+        for r_by_ctau, label, color, marker in _curves:
             r = np.array([r_by_ctau.get(k[-1], float('nan')) for k in keys], dtype=float)[order]
             _track(r)
             ax.plot(x, r, color=color, marker=marker, markersize=7, linewidth=1.9, zorder=4, label=label)
+        for _xv in x:
+            _vals = [(d.get(_xv, float('nan')), c) for d, _l, c, _m in _curves]
+            _vals = [(v, c) for v, c in _vals if np.isfinite(v) and v > 0]
+            if len(_vals) == 2 and f"{_vals[0][0]:.2g}" == f"{_vals[1][0]:.2g}":
+                _vals = _vals[:1]
+            _vals.sort(key=lambda t: -t[0])
+            for _i, (_rv, _c) in enumerate(_vals):
+                ax.annotate(f"{_rv:.2g}", (_xv, _rv), textcoords="offset points",
+                            xytext=(0, 8 if _i == 0 else -9), ha="center",
+                            va=('bottom' if _i == 0 else 'top'), fontsize=8, color=_c, zorder=5)
 
         ax.set_xscale('log')
         ax.set_yscale('log')
         ax.set_xlabel(r'$c\tau$ [mm]')
-        ax.set_ylabel(r'Expected asymptotic limit on $r$ (95% CL)')
+        ax.set_ylabel('Asymptotic limits')
+        ax.set_title(DISC_LABEL, loc='left', fontsize=15)
         if r_max > 0.0 and np.isfinite(r_min):
             ax.set_ylim(r_min * 0.5, r_max * 1.6)
         else:
@@ -1391,6 +1625,7 @@ if _args.significance:
         ax.text(0.04, 0.96, '\n'.join(txt), transform=ax.transAxes, va='top', ha='left', fontsize=14)
         ax.legend(loc='upper right', fontsize=12, framealpha=0.9)
         ax.tick_params(direction='in', top=True, right=True, which='both')
+        _draw_prev_br_panel(ax, ax_br, keys)
         fig.tight_layout()
         _fout = _mp_dir(masses) / f'best_fpr_strategy_limit_vs_ctau_{_mass_tag(masses)}.png'
         fig.savefig(_fout, dpi=130)
@@ -1409,6 +1644,101 @@ if _args.significance:
             winners = sorted(f for f, n in top if n == best_n)
             vote[lxy_label] = (winners[0], counts)
         return vote
+
+    def _majvote_signal_efficiency(keys, fpr_for_bin):
+        out = {}
+        for k in keys:
+            n_all, n_win, by_bin = _sig_slices(k)
+            n_pass = 0
+            for lb, f_t in fpr_for_bin.items():
+                roc = _roc_for(lb, k)
+                wp = _wp_from_roc(*roc, f_t) if roc is not None else None
+                sc = by_bin.get(lb)
+                if wp is None or sc is None:
+                    continue
+                n_pass += _counts_above_thr(sc, wp[0])
+            if n_win > 0:
+                out[k] = (n_pass, n_win, n_all)
+        return out
+
+    def _signal_efficiency_plots(eff):
+        if not eff:
+            return
+        out_dir = EVAL_ROOT / "signal_efficiency"
+        os.makedirs(out_dir, exist_ok=True)
+        rows = []
+        for k, (n_pass, n_win, n_all) in sorted(eff.items()):
+            e = n_pass / n_win
+            rows.append({**{p: float(v) for p, v in zip(MASS_PARAMS, k[:-1])}, "ctau": float(k[-1]),
+                         "eff": e, "err": float(np.sqrt(e * (1.0 - e) / n_win)),
+                         "eff_incl_mass_window": (n_pass / n_all) if n_all else None,
+                         "n_pass": int(n_pass), "n_in_mass_window": int(n_win), "n_test": int(n_all)})
+        with open(out_dir / "signal_efficiency.json", "w") as fh:
+            json.dump({"description": "Signal efficiency of the majority-vote working point (one cut per lxy "
+                                      "bin, as in the majvote datacards), test set only: eff = n_pass / "
+                                      "n_in_mass_window; eff_incl_mass_window = n_pass / n_test.",
+                       "model": MODEL, "discriminant": DISC_LABEL, "points": rows}, fh, indent=1)
+
+        if MODEL == "dqcd":
+            xkey, xlabel = "mpi", r"$m_{\pi_3}$ [GeV]"
+            groups = [(g, rf"$m_{{A'}}/m_{{\pi_3}} = 1/{round(1.0 / g)}$") for g in sorted(MRATIO_GRID, reverse=True)]
+            def _grp(r):
+                return _mratio(r["mpi"], r["mA"])
+        else:
+            xkey, xlabel = "mzd", r"$m_{Z_d}$ [GeV]"
+            groups = [(None, "HAHM")]
+            def _grp(r):
+                return None
+        colors = ["#1f77b4", "#d62728"]
+        ctaus = sorted({r["ctau"] for r in rows})
+
+        def _draw(ax, sel, color, label, ls="-", marker="o"):
+            sel = sorted(sel, key=lambda r: r[xkey])
+            if not sel:
+                return False
+            ax.errorbar([r[xkey] for r in sel], [r["eff"] for r in sel], yerr=[r["err"] for r in sel],
+                        color=color, ls=ls, marker=marker, markersize=5, capsize=3, linewidth=1.4, label=label)
+            return True
+
+        def _style(ax, title):
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel("Signal efficiency at WP")
+            ax.set_ylim(0.0, 1.05)
+            ax.grid(alpha=0.3)
+            ax.set_title(title, loc="left", fontsize=14)
+            ax.text(1.0, 1.01, f"{DISC_LABEL}, majority-vote WP", transform=ax.transAxes,
+                    ha="right", va="bottom", fontsize=12)
+            ax.tick_params(direction="in", top=True, right=True, which="both")
+
+        for c in ctaus:
+            fig, ax = plt.subplots(figsize=FIGSIZE)
+            drew = False
+            for i, (g, lab) in enumerate(groups):
+                drew |= _draw(ax, [r for r in rows if r["ctau"] == c and _grp(r) == g], colors[i % 2], lab)
+            if not drew:
+                plt.close(fig)
+                continue
+            _style(ax, rf"$c\tau = {c:g}$ mm")
+            ax.legend(loc="lower right", fontsize=12, framealpha=0.9)
+            fig.tight_layout()
+            fig.savefig(out_dir / f"signal_efficiency_ctau{_flabel(c)}.png", dpi=150)
+            plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+        cmap = plt.get_cmap("viridis", max(len(ctaus), 2))
+        styles = [("-", "o"), ("--", "s")]
+        for j, c in enumerate(ctaus):
+            for i, (g, lab) in enumerate(groups):
+                ls, mk = styles[i % 2]
+                _draw(ax, [r for r in rows if r["ctau"] == c and _grp(r) == g], cmap(j), None, ls=ls, marker=mk)
+        _style(ax, "All lifetimes")
+        handles = [Line2D([], [], color=cmap(j), lw=2, label=rf"$c\tau = {c:g}$ mm") for j, c in enumerate(ctaus)]
+        handles += [Line2D([], [], color="gray", ls=styles[i % 2][0], marker=styles[i % 2][1], label=lab)
+                    for i, (g, lab) in enumerate(groups)]
+        ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=10, framealpha=0.9)
+        fig.tight_layout()
+        fig.savefig(out_dir / "signal_efficiency_all_ctau.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
 
     _final_groups = mass_groups
     if PLOT_ONLY is not None:
@@ -1444,11 +1774,13 @@ if _args.significance:
         "conditional": bool(use_conditional),
         "cond_vars": list(COND_VAR) if use_conditional else [],
         "require_l1": bool(REQUIRE_L1),
+        "resonance_veto": bool(_args.resonance_veto),
         "mass_window_rel": MASS_WINDOW_REL if MASS_WINDOW_ACTIVE else None,
         "lxy_bins": {lb: [lxy_bins[i], lxy_bins[i + 1]] for i, lb in enumerate(lxy_labels)},
         "b_floor": _B_FLOOR,
     })
     _wp_out.setdefault("mass_points", {})
+    _sig_eff = {}
 
     for masses, ctau_vals in sorted(_final_groups.items()):
         keys = [(*masses, c) for c in sorted(ctau_vals) if (*masses, c) in SIG_NGEN]
@@ -1483,7 +1815,7 @@ if _args.significance:
             for lxy_label in _bin_models:
                 n_bkg_raw = _bkg_count_in_window(masses[MASS_WINDOW_IDX], lxy_label)
                 n_bkg = _bkg_yield_in_window(n_bkg_raw)
-                bin_fpr_targets = _adaptive_fpr_targets(n_bkg)
+                bin_fpr_targets = _adaptive_fpr_targets(n_bkg_raw)
                 if not bin_fpr_targets:
                     print(f"{_mass_str(masses)} lxy={lxy_label}: no background in the "
                           f"mass window (n={n_bkg_raw}) -- skipping adaptive FPR scan for this bin.")
@@ -1580,6 +1912,7 @@ if _args.significance:
             with open(_WP_PATH, "w") as fh:
                 json.dump(_wp_out, fh, indent=2)
             print(f"Wrote majority-vote working points to {_WP_PATH}")
+            _sig_eff.update(_majvote_signal_efficiency(keys, fpr_for_bin))
 
         # (2) Per-lifetime best: each bin uses its own best FPR for that specific lifetime
         # (may differ bin-to-bin and lifetime-to-lifetime).
@@ -1622,5 +1955,7 @@ if _args.significance:
                                  fpr_rows=(fpr_rows if not ADAPTIVE_FPR else None))
 
         _drop_key_slices()
+
+    _signal_efficiency_plots(_sig_eff)
 
 print(f"Done. Eval plots written under {EVAL_ROOT}")

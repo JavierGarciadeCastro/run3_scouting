@@ -401,7 +401,7 @@ prependtodir = ""
 if not args.condor:
     prependtodir = "" if is_local else "/ceph/cms"
 else:
-    prependtodir = "davs://redirector.t2.ucsd.edu:1095"
+    prependtodir = "root://redirector.t2.ucsd.edu:1095"
 if not args.condor:
     cephbase = args.inDir if is_local else "/ceph/cms%s"%indir
     if args.inFile!="*" and args.inSample!="*":
@@ -464,13 +464,17 @@ if not isData and args.weightMC and 'MinBias' not in args.inSample and 'QCD' not
             h_ = f_.Get("counts").Clone("Clone_{}".format(_))
             counts.Add(h_)
             f_.Close()
-        ncounts = counts.GetBinContent(1) 
-        with open('data/hahm-request.csv') as mcinfo:
+        ncounts = counts.GetBinContent(1)
+        hahm_csv = 'data/hahm-request_2024.csv' if args.year == "2024" else 'data/hahm-request.csv'
+        efilter = None
+        with open(hahm_csv) as mcinfo:
             reader = csv.reader(mcinfo, delimiter=',')
             for row in reader:
                 if sampleTag in row[0]:
                     efilter = float(row[-1])
                     break
+        if efilter is None:
+            sys.exit(f"ERROR: no filter efficiency for {sampleTag} in {hahm_csv}")
     if 'BToPhi' in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
@@ -709,6 +713,9 @@ branches["passL1"] = []
 EVENT_COUNT_BRANCHES = ["nMuons_NoVtx", "nMuons_Vtx", "nSVs_NoVtx", "nSVs_Vtx"]
 for _cb in EVENT_COUNT_BRANCHES:
     branches[_cb] = []
+EVENT_INFO_BRANCHES = ["run", "lumi", "evtn", "nPUTrue", "wPU"]
+for _eb in EVENT_INFO_BRANCHES:
+    branches[_eb] = []
 
 
 
@@ -723,6 +730,11 @@ def mu_nhits(t, idx, is_vtx):
     if is_vtx:
         return 0
     return t.Muon_nhitsbeforesv[idx]
+
+def vtx_muvec_corr(t, idx):
+    vec = ROOT.TLorentzVector()
+    vec.SetPtEtaPhiM(t.Muon_vtx_pt[idx], t.Muon_vtx_eta[idx], t.Muon_vtx_phiCorr[idx], MUON_MASS)
+    return vec
 
 def svattr(t, attr, idx, is_vtx):
     """Get SV attribute from the appropriate vertex collection."""
@@ -740,6 +752,8 @@ for e in range(firste,laste):
     branches["passL1"].append(-1.)   # event-level; overwritten with the real value below
     for _cb in EVENT_COUNT_BRANCHES:
         branches[_cb].append(-1.)    # event-level; overwritten with the real value below
+    for _eb in EVENT_INFO_BRANCHES:
+        branches[_eb].append(-1.)    # event-level; overwritten with the real value below
 
     # Access event
     t.GetEntry(e)
@@ -749,6 +763,8 @@ for e in range(firste,laste):
     branches["passL1"][-1] = float(t.passL1)
     for _cb in EVENT_COUNT_BRANCHES:
         branches[_cb][-1] = float(getattr(t, _cb))
+    for _eb in EVENT_INFO_BRANCHES:
+        branches[_eb][-1] = float(getattr(t, _eb))
     if args.requireL1 and not t.passL1:
         continue
     if len(args.noSeed) > 0:
@@ -1080,8 +1096,8 @@ for e in range(firste,laste):
                 # Overlapping SV pair
                 if ovidx > -1 and t.Muon_vtx_bestAssocSVOverlapVtxIdx[mm] == ovidx and ovpos > -1:
                     if not (m in dmuidxs_osv_vtx or mm in dmuidxs_osv_vtx):
-                        dmuvec_osv_vtx.append(t.Muon_vtx_vec[m])
-                        dmuvec_osv_vtx[-1] = dmuvec_osv_vtx[-1] + t.Muon_vtx_vec[mm]
+                        dmuvec_osv_vtx.append(vtx_muvec_corr(t, m))
+                        dmuvec_osv_vtx[-1] = dmuvec_osv_vtx[-1] + vtx_muvec_corr(t, mm)
                         dmuidxs_osv_vtx.append(m)
                         dmuidxs_osv_vtx.append(mm)
                         dmu_muvecdp_osv_vtx.append(ROOT.TLorentzVector())
@@ -1094,8 +1110,8 @@ for e in range(firste,laste):
                 # Non-overlapping SV pair
                 elif vidx > -1 and t.Muon_vtx_bestAssocSVVtxIdx[mm] == vidx and vpos > -1:
                     if not (m in dmuidxs_vtx or mm in dmuidxs_vtx):
-                        dmuvec_vtx.append(t.Muon_vtx_vec[m])
-                        dmuvec_vtx[-1] = dmuvec_vtx[-1] + t.Muon_vtx_vec[mm]
+                        dmuvec_vtx.append(vtx_muvec_corr(t, m))
+                        dmuvec_vtx[-1] = dmuvec_vtx[-1] + vtx_muvec_corr(t, mm)
                         dmuidxs_vtx.append(m)
                         dmuidxs_vtx.append(mm)
                         dmu_muvecdp_vtx.append(ROOT.TLorentzVector())
