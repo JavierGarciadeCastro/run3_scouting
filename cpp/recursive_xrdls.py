@@ -3,10 +3,10 @@ import subprocess
 import sys
 import os
 
-HOST = "redirector.t2.ucsd.edu:1095"
+HOST = "redir.t2.ucsd.edu:1095"
 SKIP_DIRS = {'log', 'failed', 'temp'}
 
-def xrdls(path, retries=3, timeout=120):
+def xrdls(path, retries=5, timeout=600):
     for attempt in range(retries):
         print(f"[xrdls] listing: {path}", file=sys.stderr, flush=True)
         try:

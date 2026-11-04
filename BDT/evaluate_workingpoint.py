@@ -38,6 +38,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import mplhep as hep
+
+from plot_eval import make_plots as make_sig_eff_plots, plot_one as plot_prev_br, read_sources as read_prev_sources
 import numpy as np
 import pandas as pd
 import uproot
@@ -96,11 +98,12 @@ _parser.add_argument("--model-dir", default=None, metavar="PATH",
                           "dataset-related flags (--scenario/--conditional/--cond-var/--holdout/"
                           "--require-l1/--mass-point/--sig-dir/--mratio-grid) must still match "
                           "the training run, since they control the reconstructed train/test split.")
-_parser.add_argument("--resonance-veto", action=argparse.BooleanOptionalAction, default=True,
-                     help="Drop events whose SV1 dimuon mass is in a known-resonance window (as in the filler), "
-                          "signal and background.")
 _parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --require-l1 used for training.")
+_parser.add_argument("--hit-preselection", action=argparse.BooleanOptionalAction, default=None,
+                     help="Preselection on N_excess = SV1_mu1_nhitsbeforesv + SV1_mu2_nhitsbeforesv, signal and "
+                          "background: 0 for lxy < 11 cm, <= 1 for 11-16 cm, <= 2 above 16 cm. Default: as in the "
+                          "training manifest. Saved in majority_vote_wp.json so data_at_wp.py applies the same cut.")
 _parser.add_argument("--do-random-splitting", action=argparse.BooleanOptionalAction, default=False,
                      help="Must match the --do-random-splitting used for training.")
 _parser.add_argument("--mass-point", default=None, metavar="mpi:mA | mzd",
@@ -115,11 +118,15 @@ _parser.add_argument("--plot-only", default=None, metavar="mpi:mA | mzd",
 _parser.add_argument("--eval-suffix", default="", metavar="TAG",
                      help="Append _TAG to the eval output folder (eval_testonly_TAG, eval_testonly_on<S>_TAG) "
                           "so a rerun does not overwrite a previous evaluation.")
-_parser.add_argument("--sig-xsec-hepdata", default=None, metavar="DIR|GLOB",
+_parser.add_argument("--sig-xsec-hepdata", metavar="DIR|GLOB",
+                     default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "previous_limits"),
                      help="Folder (all *.csv inside) or glob of HEPData CSVs with the previous papers' observed "
                           "95%% CL limits: B(H->ZdZd) vs mZd per ctau for hahm, the Scenario <S> 2D tables for dqcd, "
                           "e.g. previous_limits. Signal is normalized to XSEC_H_PB x B_obs instead of 1 pb, so r < 1 "
                           "means better than that observed limit. Points the tables do not cover stay at 1 pb.")
+_parser.add_argument("--loose-sig-eff", type=float, default=0.9,
+                     help="Signal efficiency of the loose WP (threshold_loose_by_ctau in majority_vote_wp.json): "
+                          "fraction of the PU-weighted test signal in the mass window and lxy bin that passes.")
 _args = _parser.parse_args()
 
 def _resolve_fpr_targets():
@@ -207,6 +214,12 @@ _train_manifests = sorted(_BINMODEL_DIR.glob("*_manifest.json"))
 with open(_train_manifests[0]) as _mf:
     _train_man = json.load(_mf)
 _train_scen = _train_man.get('scenario', 'A')
+_train_hitpre = bool(_train_man.get('hit_preselection', False))
+if _args.hit_preselection is not None and _args.hit_preselection != _train_hitpre:
+    print(f"WARNING: --{'' if _args.hit_preselection else 'no-'}hit-preselection differs from the training "
+          f"(hit_preselection={_train_hitpre}); evaluating with the command-line choice.")
+HIT_PRESELECTION = _train_hitpre if _args.hit_preselection is None else _args.hit_preselection
+print(f"Hit preselection (N_excess): {HIT_PRESELECTION}")
 TRAIN_MODEL_TAG = {"hahm": "HAHM", "both": f"Scenario{_train_scen}_HAHM"}.get(
     _train_man.get("model", "dqcd"), f"Scenario{_train_scen}")
 DISC_LABEL = {("bdt", False): "BDT", ("bdt", True): "pBDT", ("pnn", False): "NN", ("pnn", True): "PNN"}[
@@ -236,6 +249,18 @@ def _theta_of(key):
     if MODEL == "dqcd":
         _val_of["mratio"] = _mratio(key[0], key[1])
     return tuple(_val_of[v] for v in COND_VAR)
+
+def _loose_threshold(sc, w, eff):
+    if sc is None or len(sc) == 0:
+        return None
+    s = np.nan_to_num(np.asarray(sc, dtype=np.float32), nan=-1.0)
+    w = np.asarray(w, dtype=float)
+    o = np.argsort(s)[::-1]
+    cw = np.cumsum(w[o])
+    if cw[-1] <= 0:
+        return None
+    i = min(int(np.searchsorted(cw, eff * cw[-1])), len(o) - 1)
+    return float(np.nextafter(s[o[i]], np.float32(-2.0)))
 
 def _wp_from_roc(fpr_arr, thr_arr, target):
     fpr_arr = np.asarray(fpr_arr, dtype=float)
@@ -553,7 +578,7 @@ def _make_bdt_vars():
     return vars_
 
 BDT_VARIABLES = _make_bdt_vars()
-_LOAD_BRANCHES = list(dict.fromkeys(BDT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1"]))
+_LOAD_BRANCHES = list(dict.fromkeys(BDT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1", "wPU"]))
 
 _READ_THREADS  = max(1, int(os.environ.get("WP_READ_THREADS", "4")))
 _READ_EXECUTOR = (ThreadPoolExecutor(max_workers=_READ_THREADS) if _READ_THREADS > 1 else None)
@@ -580,13 +605,20 @@ def read_flat(path, step=2_000_000):
 RESONANCE_WINDOWS = [(0.41, 0.50), (0.51, 0.59), (0.731, 0.83), (0.96, 1.08), (2.91, 3.27), (3.47, 3.89),
                      (8.99, 9.91), (9.64, 10.56), (9.90, 10.78), (81.0, 101.0)]
 
-def apply_l1(df, src):
-    if _args.resonance_veto:
+def pass_hit_preselection(lxy, nh1, nh2):
+    n = nh1 + nh2
+    return np.where(lxy < 11.0, n <= 0, np.where(lxy < 16.0, n <= 1, n <= 2))
+
+def apply_l1(df, src, veto=True):
+    if veto:
         _m = df['SV1_mass'].to_numpy()
         _hit = np.zeros(len(df), dtype=bool)
         for _lo, _hi in RESONANCE_WINDOWS:
             _hit |= (_m > _lo) & (_m < _hi)
         df = df[~_hit].reset_index(drop=True)
+    if HIT_PRESELECTION:
+        df = df[pass_hit_preselection(df['SV1_lxy'].to_numpy(), df['SV1_mu1_nhitsbeforesv'].to_numpy(),
+                                      df['SV1_mu2_nhitsbeforesv'].to_numpy())].reset_index(drop=True)
     if not REQUIRE_L1:
         return df
     return df[df['passL1'] > 0.5].reset_index(drop=True)
@@ -612,7 +644,7 @@ def add_dxy_lxy(df):
 print("Building dataframe (10-15 minutes) -- must reproduce training's df_global exactly")
 sig_frames = []
 for fpath, key in sig_file_params:
-    df = apply_l1(read_flat(fpath), Path(fpath).name)
+    df = apply_l1(read_flat(fpath), Path(fpath).name, veto=False)
     df['param_ctau']   = float(key[-1])
     for p, v in zip(MASS_PARAMS, key[:-1]):
         df[f'param_{p}'] = float(v)
@@ -804,6 +836,11 @@ _SCORE_A  = df_global['score'].to_numpy()
 _LABEL_A  = df_global['label'].to_numpy()
 _MASS_A   = df_global['SV1_mass'].to_numpy()
 _CTAU_A   = df_global['param_ctau'].to_numpy()
+if 'wPU' in df_global.columns:
+    _WPU_A = np.where(_LABEL_A == 1, df_global['wPU'].fillna(1.0).to_numpy(), 1.0).astype(np.float64)
+else:
+    print("WARNING: no wPU branch in the tuples -- signal yields without PU weights")
+    _WPU_A = np.ones(len(df_global), dtype=np.float64)
 
 _lxy_ser = df_global['lxy_bin']
 if not isinstance(_lxy_ser.dtype, pd.CategoricalDtype):
@@ -932,7 +969,7 @@ def _sig_slices(key):
             (lo, hi), _c, _h = res
             _m   = _MASS_A[rows]
             rows = rows[(_m >= lo) & (_m <= hi)]
-        hit = (n_all, len(rows), _split_by_bin(rows))
+        hit = (n_all, len(rows), _split_by_bin(rows), _split_by_bin(rows, _WPU_A[rows]))
         _SIG_SLICES[key] = hit
     return hit
 
@@ -1074,14 +1111,15 @@ def _bkg_total_in_window(key, lxy_label):
     return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (n / denom), n
 
 def _sig_s_at(key, t, lxy_label):
-    sc = _sig_slices(key)[2].get(lxy_label)
+    _sl = _sig_slices(key)
+    sc = _sl[2].get(lxy_label)
     if sc is None or len(sc) == 0:
         return None
     frac = SIG_TEST_FRAC.get(key, 0.0)
     if frac <= 0.0:
         return None
     n_raw   = _counts_above_thr(sc, t)
-    sig_eff = n_raw / (SIG_NGEN[key] * frac)
+    sig_eff = float(_sl[3][lxy_label][sc > t].sum()) / (SIG_NGEN[key] * frac)
     return SIG_XSEC_PB.get(key, 1.0) * PB_TO_FB * LUMI_FB * sig_eff, n_raw
 
 # ---------------------------------------------------------------------------
@@ -1645,100 +1683,83 @@ if _args.significance:
             vote[lxy_label] = (winners[0], counts)
         return vote
 
-    def _majvote_signal_efficiency(keys, fpr_for_bin):
+    def _majvote_signal_efficiency(keys, fpr_for_bin, loose_bins=None):
         out = {}
         for k in keys:
-            n_all, n_win, by_bin = _sig_slices(k)
-            n_pass = 0
+            n_all, n_win, by_bin, w_by_bin = _sig_slices(k)
+            n_pass, w_pass, w_win = 0, 0.0, 0.0
+            per_bin = {}
             for lb, f_t in fpr_for_bin.items():
-                roc = _roc_for(lb, k)
-                wp = _wp_from_roc(*roc, f_t) if roc is not None else None
                 sc = by_bin.get(lb)
-                if wp is None or sc is None:
+                if sc is None:
                     continue
-                n_pass += _counts_above_thr(sc, wp[0])
+                if loose_bins is None:
+                    roc = _roc_for(lb, k)
+                    wp = _wp_from_roc(*roc, f_t) if roc is not None else None
+                else:
+                    t_l = ((loose_bins.get(lb) or {}).get("threshold_loose_by_ctau") or {}).get(f"{k[-1]:g}")
+                    if t_l is None:
+                        wp = None
+                    else:
+                        b_sc = _bkg_slices(k)[1].get(lb)
+                        wp = (t_l, _counts_above_thr(b_sc, t_l) / len(b_sc) if b_sc is not None and len(b_sc) else 0.0)
+                if wp is None:
+                    continue
+                n_b = _counts_above_thr(sc, wp[0])
+                n_pass += n_b
+                w = np.asarray(w_by_bin.get(lb), dtype=float)
+                w_b, w_t = float(np.sum(w[sc > wp[0]])), float(np.sum(w))
+                w_pass += w_b
+                w_win += w_t
+                b_y, b_n = _bkg_b_at(wp[0], k, lb)
+                b_tot, b_tot_n = _bkg_total_in_window(k, lb)
+                per_bin[lb] = {"fpr_target": None if loose_bins is not None else float(f_t),
+                               "fpr_achieved": float(wp[1]), "threshold": float(wp[0]),
+                               "n_pass": int(n_b), "n_in_mass_window": int(len(sc)),
+                               "w_pass": w_b, "w_in_mass_window": w_t,
+                               "bkg_yield": float(b_y), "bkg_raw": int(b_n),
+                               "bkg_yield_before_wp": float(b_tot), "bkg_raw_before_wp": int(b_tot_n)}
             if n_win > 0:
-                out[k] = (n_pass, n_win, n_all)
+                out[k] = (n_pass, n_win, n_all, per_bin, w_pass, w_win)
         return out
 
-    def _signal_efficiency_plots(eff):
+    def _signal_efficiency_plots(eff, loose=False):
         if not eff:
             return
-        out_dir = EVAL_ROOT / "signal_efficiency"
+        sub = "signal_efficiency_loose" if loose else "signal_efficiency"
+        out_dir = EVAL_ROOT / sub
         os.makedirs(out_dir, exist_ok=True)
         rows = []
-        for k, (n_pass, n_win, n_all) in sorted(eff.items()):
-            e = n_pass / n_win
+        for k, (n_pass, n_win, n_all, per_bin, w_pass, w_win) in sorted(eff.items()):
+            e = (w_pass / w_win if w_win > 0 else 0.0) if loose else n_pass / n_win
+            for d in per_bin.values():
+                nb = d["n_in_mass_window"]
+                if loose:
+                    d["eff"] = d["w_pass"] / d["w_in_mass_window"] if nb and d["w_in_mass_window"] > 0 else None
+                else:
+                    d["eff"] = d["n_pass"] / nb if nb else None
+                d["err"] = float(np.sqrt(d["eff"] * (1.0 - d["eff"]) / nb)) if d["eff"] is not None else None
+                d["signal_fraction"] = nb / n_win
             rows.append({**{p: float(v) for p, v in zip(MASS_PARAMS, k[:-1])}, "ctau": float(k[-1]),
                          "eff": e, "err": float(np.sqrt(e * (1.0 - e) / n_win)),
                          "eff_incl_mass_window": (n_pass / n_all) if n_all else None,
-                         "n_pass": int(n_pass), "n_in_mass_window": int(n_win), "n_test": int(n_all)})
+                         "n_pass": int(n_pass), "n_in_mass_window": int(n_win), "n_test": int(n_all),
+                         "bins": per_bin})
         with open(out_dir / "signal_efficiency.json", "w") as fh:
             json.dump({"description": "Signal efficiency of the majority-vote working point (one cut per lxy "
                                       "bin, as in the majvote datacards), test set only: eff = n_pass / "
-                                      "n_in_mass_window; eff_incl_mass_window = n_pass / n_test.",
-                       "model": MODEL, "discriminant": DISC_LABEL, "points": rows}, fh, indent=1)
+                                      "n_in_mass_window; eff_incl_mass_window = n_pass / n_test; bins = the same per lxy bin "
+                                      "(eff = n_pass / n_in_mass_window of that bin, signal_fraction = share of "
+                                      "the window events in that bin). bkg_yield / bkg_raw = MinBias test-set "
+                                      "background in the mass window and lxy bin passing the WP, normalized to "
+                                      "lumi_fb / raw MC events (*_before_wp: no WP cut). wp = loose: cut = "
+                                      "threshold_loose_by_ctau, eff = wPU-weighted w_pass / w_in_mass_window, "
+                                      "fpr_achieved = MinBias fraction in the mass window and lxy bin above the cut.",
+                       "model": MODEL, "discriminant": DISC_LABEL, "lumi_fb": float(LUMI_FB),
+                       "b_floor": float(_B_FLOOR), "wp": "loose" if loose else "tight",
+                       "loose_sig_eff": float(_args.loose_sig_eff), "points": rows}, fh, indent=1)
 
-        if MODEL == "dqcd":
-            xkey, xlabel = "mpi", r"$m_{\pi_3}$ [GeV]"
-            groups = [(g, rf"$m_{{A'}}/m_{{\pi_3}} = 1/{round(1.0 / g)}$") for g in sorted(MRATIO_GRID, reverse=True)]
-            def _grp(r):
-                return _mratio(r["mpi"], r["mA"])
-        else:
-            xkey, xlabel = "mzd", r"$m_{Z_d}$ [GeV]"
-            groups = [(None, "HAHM")]
-            def _grp(r):
-                return None
-        colors = ["#1f77b4", "#d62728"]
-        ctaus = sorted({r["ctau"] for r in rows})
-
-        def _draw(ax, sel, color, label, ls="-", marker="o"):
-            sel = sorted(sel, key=lambda r: r[xkey])
-            if not sel:
-                return False
-            ax.errorbar([r[xkey] for r in sel], [r["eff"] for r in sel], yerr=[r["err"] for r in sel],
-                        color=color, ls=ls, marker=marker, markersize=5, capsize=3, linewidth=1.4, label=label)
-            return True
-
-        def _style(ax, title):
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel("Signal efficiency at WP")
-            ax.set_ylim(0.0, 1.05)
-            ax.grid(alpha=0.3)
-            ax.set_title(title, loc="left", fontsize=14)
-            ax.text(1.0, 1.01, f"{DISC_LABEL}, majority-vote WP", transform=ax.transAxes,
-                    ha="right", va="bottom", fontsize=12)
-            ax.tick_params(direction="in", top=True, right=True, which="both")
-
-        for c in ctaus:
-            fig, ax = plt.subplots(figsize=FIGSIZE)
-            drew = False
-            for i, (g, lab) in enumerate(groups):
-                drew |= _draw(ax, [r for r in rows if r["ctau"] == c and _grp(r) == g], colors[i % 2], lab)
-            if not drew:
-                plt.close(fig)
-                continue
-            _style(ax, rf"$c\tau = {c:g}$ mm")
-            ax.legend(loc="lower right", fontsize=12, framealpha=0.9)
-            fig.tight_layout()
-            fig.savefig(out_dir / f"signal_efficiency_ctau{_flabel(c)}.png", dpi=150)
-            plt.close(fig)
-
-        fig, ax = plt.subplots(figsize=(10, 7))
-        cmap = plt.get_cmap("viridis", max(len(ctaus), 2))
-        styles = [("-", "o"), ("--", "s")]
-        for j, c in enumerate(ctaus):
-            for i, (g, lab) in enumerate(groups):
-                ls, mk = styles[i % 2]
-                _draw(ax, [r for r in rows if r["ctau"] == c and _grp(r) == g], cmap(j), None, ls=ls, marker=mk)
-        _style(ax, "All lifetimes")
-        handles = [Line2D([], [], color=cmap(j), lw=2, label=rf"$c\tau = {c:g}$ mm") for j, c in enumerate(ctaus)]
-        handles += [Line2D([], [], color="gray", ls=styles[i % 2][0], marker=styles[i % 2][1], label=lab)
-                    for i, (g, lab) in enumerate(groups)]
-        ax.legend(handles=handles, loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=10, framealpha=0.9)
-        fig.tight_layout()
-        fig.savefig(out_dir / "signal_efficiency_all_ctau.png", dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        make_sig_eff_plots(EVAL_ROOT, sub)
 
     _final_groups = mass_groups
     if PLOT_ONLY is not None:
@@ -1774,13 +1795,16 @@ if _args.significance:
         "conditional": bool(use_conditional),
         "cond_vars": list(COND_VAR) if use_conditional else [],
         "require_l1": bool(REQUIRE_L1),
-        "resonance_veto": bool(_args.resonance_veto),
+        "resonance_veto": "background",
+        "hit_preselection": bool(HIT_PRESELECTION),
         "mass_window_rel": MASS_WINDOW_REL if MASS_WINDOW_ACTIVE else None,
         "lxy_bins": {lb: [lxy_bins[i], lxy_bins[i + 1]] for i, lb in enumerate(lxy_labels)},
         "b_floor": _B_FLOOR,
+        "loose_sig_eff": float(_args.loose_sig_eff),
     })
     _wp_out.setdefault("mass_points", {})
     _sig_eff = {}
+    _sig_eff_loose = {}
 
     for masses, ctau_vals in sorted(_final_groups.items()):
         keys = [(*masses, c) for c in sorted(ctau_vals) if (*masses, c) in SIG_NGEN]
@@ -1897,6 +1921,14 @@ if _args.significance:
                         continue
                     _entry["fpr_achieved_by_ctau"] = _fpr_c
                     _entry["threshold_by_ctau"] = _thr_c
+                _loose_c = {}
+                for k in keys:
+                    _sl = _sig_slices(k)
+                    t_l = _loose_threshold(_sl[2].get(lb), _sl[3].get(lb), _args.loose_sig_eff)
+                    if t_l is not None:
+                        _loose_c[f"{k[-1]:g}"] = t_l
+                if _loose_c:
+                    _entry["threshold_loose_by_ctau"] = _loose_c
                 _wp_bins[lb] = _entry
             _res = _signal_mass_window(keys[0])
             _wp_entry = {
@@ -1913,6 +1945,7 @@ if _args.significance:
                 json.dump(_wp_out, fh, indent=2)
             print(f"Wrote majority-vote working points to {_WP_PATH}")
             _sig_eff.update(_majvote_signal_efficiency(keys, fpr_for_bin))
+            _sig_eff_loose.update(_majvote_signal_efficiency(keys, fpr_for_bin, loose_bins=_wp_bins))
 
         # (2) Per-lifetime best: each bin uses its own best FPR for that specific lifetime
         # (may differ bin-to-bin and lifetime-to-lifetime).
@@ -1950,12 +1983,20 @@ if _args.significance:
                         fh.write(f"    FPR={f_t:g}: expected 95% CL limit r < {r:.4g}\n")
             print(f"Wrote fixed-grid FPR comparison to {_cmp_path}")
 
-        _best_fpr_strategy_plot(masses, keys, majority_r, perlifetime_r,
-                                 fixed_cells=(cells if not ADAPTIVE_FPR else None),
-                                 fpr_rows=(fpr_rows if not ADAPTIVE_FPR else None))
+        if SIG_XSEC_PB and (EVAL_ROOT / "sig_xsec_used.csv").is_file():
+            _hahm_prev, _prev_by_tag = read_prev_sources(EVAL_ROOT)
+            _prev_png = plot_prev_br(EVAL_ROOT, _mass_tag(masses), _hahm_prev,
+                                     _prev_by_tag.get(_mass_tag(masses), {}), DISC_LABEL)
+            if _prev_png is not None:
+                print(f"Wrote {_prev_png}")
+        else:
+            _best_fpr_strategy_plot(masses, keys, majority_r, perlifetime_r,
+                                     fixed_cells=(cells if not ADAPTIVE_FPR else None),
+                                     fpr_rows=(fpr_rows if not ADAPTIVE_FPR else None))
 
         _drop_key_slices()
 
     _signal_efficiency_plots(_sig_eff)
+    _signal_efficiency_plots(_sig_eff_loose, loose=True)
 
 print(f"Done. Eval plots written under {EVAL_ROOT}")

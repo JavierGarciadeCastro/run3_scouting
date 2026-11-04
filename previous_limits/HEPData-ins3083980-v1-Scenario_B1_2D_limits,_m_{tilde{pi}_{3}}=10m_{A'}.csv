@@ -1,0 +1,63 @@
+#: table_doi: 10.17182/hepdata.165888.v1/t28
+#: name: Scenario B1 2D limits, $m_{\tilde{\pi}_{3}}=10m_{A'}$
+#: description: Observed upper limits at $95\%$ CL on the branching fraction $\mathcal{B}\left(\textrm{H}\rightarrow\psi\overline{\psi}\right)$ as functions of the $\textrm{A}'$ mass and $c\tau$ for $m_{\tilde{\pi}_{3}}=10m_{A'}$ in Scenario B1. It is assumed that $m_{\tilde{\eta}}=\tilde{\Lambda}=4m_{\tilde{\pi}_{2}}$ and $\sin\theta=0.1$, where $m_{\tilde{\eta}}$ is the mass of the dark-sector pseudoscalar meson and $\theta$ is the mixing angle parametrising the isospin violation. The branching fraction $\mathcal{B}(\tilde{\pi}_{3}\rightarrow \textrm{A}'\textrm{A}')$ is assumed to be 1. The grey bands correspond to mass regions of known SM resonances, which are masked in the search.
+#: data_file: scenario_b1_2d_limits,_$m_{\tilde{\pi}_{3}}=10m_{a'}$.yaml
+#: Limit,Observed
+#: SQRT(S) [TeV],13
+#: LUMINOSITY [fb$^{-1}$],41.6
+$m_{\textrm{A}'}$ [GeV],$c\tau$ [mm],Observed limit
+0.33,0.1,0.004313
+0.33,0.25,0.0016436
+0.33,0.6,0.00088442
+0.33,1.0,0.0006552
+0.33,2.5,0.00043901
+0.33,6.0,0.00038412
+0.33,10.0,0.00052806
+0.33,25.0,0.00095714
+0.33,60.0,0.0020901
+0.33,100.0,0.0042226
+0.4,0.1,0.0038144
+0.4,0.25,0.0012805
+0.4,0.6,0.00058574
+0.4,1.0,0.00041932
+0.4,6.0,0.00024328
+0.4,100.0,0.002226
+0.62,0.1,0.012304
+0.62,0.25,0.0049717
+0.62,0.6,0.0021219
+0.62,1.0,0.0019833
+0.62,2.5,0.0010679
+0.62,6.0,0.00067349
+0.62,10.0,0.00067233
+0.62,25.0,0.00093146
+0.69,0.1,0.032169
+0.69,0.25,0.014221
+0.69,0.6,0.0062916
+0.69,1.0,0.004802
+0.69,2.5,0.0022692
+0.69,6.0,0.001864
+0.69,10.0,0.0014852
+0.69,25.0,0.0021519
+0.69,60.0,0.004214
+0.69,100.0,0.0063228
+0.9,0.1,0.0099607
+0.9,0.25,0.0032529
+0.9,0.6,0.0015708
+0.9,1.0,0.0011767
+0.9,2.5,0.00067566
+0.9,6.0,0.00045987
+0.9,10.0,0.00050102
+0.9,25.0,0.00065266
+0.9,60.0,0.0012986
+0.9,100.0,0.0020811
+1.2,0.1,0.0058245
+1.2,0.25,0.0017152
+1.2,0.6,0.00092967
+1.2,1.0,0.00068415
+1.2,2.5,0.00036089
+1.2,6.0,0.00025097
+1.2,10.0,0.00027854
+1.2,25.0,0.00032766
+1.2,60.0,0.00052326
+1.2,100.0,0.00071789
+

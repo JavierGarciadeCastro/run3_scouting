@@ -35,7 +35,7 @@ static set_t good_runs_;
 static bool good_runs_loaded_ = false;
 
 static const char json_py[] =
-"#! /usr/bin/env python                                                                                       \n"
+"#! /usr/bin/env python3                                                                                      \n"
 "                               \n"
 "# usage to print out good run selection for goodrun.cc:                  \n"
 "# convertGoodRunsList_JSON.py <json file>                      \n"
@@ -47,10 +47,9 @@ static const char json_py[] =
 "for run in runs.keys():                          \n"
 "    for lumiBlock in runs[run] :                       \n"
 "        if len(lumiBlock) != 2 :                       \n"
-"            print 'ERROR reading lumi block: run:',run,'lumiBlock:',lumiBlock              \n"
+"            print('ERROR reading lumi block: run:',run,'lumiBlock:',lumiBlock)             \n"
 "        else:                              \n"
-"            # print 'run ' + str(run) + ', min lumi ' + str(lumiBlock[0]) + ', max lumi ' + str(lumiBlock[1])\n"
-"            print run,lumiBlock[0],lumiBlock[1]                    \n"
+"            print(run,lumiBlock[0],lumiBlock[1])                   \n"
      "                                \n";
 //"print ''                                                                                                     \n";
 
@@ -95,7 +94,9 @@ static int load_runs(const char *fname, enum file_type type)
                         perror("opening good run list");
                         return 127;
                     }
-                    execlp("./tmp.py", "", fname, (char *)0);
+                    // Invoke python3 by name rather than relying on the shebang: worker
+                    // nodes and el8 have no bare "python" on PATH.
+                    execlp("python3", "python3", "tmp.py", fname, (char *)0);
                     perror("executing JSON conversion script");
                     exit(127);
                 }

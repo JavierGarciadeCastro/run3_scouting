@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <exception>
+#include <cstdlib>
 #include <filesystem>
 #include <numeric>
 #include <string>
@@ -61,6 +62,17 @@ const T getObjectSafe(const Event& ev, const char* prodLabel, const char* outLab
   obj.getByLabel(ev, prodLabel, outLabel);
   if (!obj.isValid()) return T{};
   return *obj.product();
+}
+
+// Branch names in EDM files are "<type>_<label>_<instance>_<process>.", so the process name
+// (PAT, HLT, ...) is not known in advance: match on the leading "<type>_<label>" part.
+bool branchWithPrefix(TTree* tree, const char* prefix) {
+  TObjArray* branches = tree->GetListOfBranches();
+  for (int i=0; i<branches->GetEntries(); ++i) {
+    if (TString(branches->At(i)->GetName()).BeginsWith(prefix))
+      return true;
+  }
+  return false;
 }
 
 template <typename T, typename Compare>
@@ -535,7 +547,14 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
   Muon Muons;
   Muon MuonsVtx;
   SVVtx SVsVtx;
-  TFile *file0 = TFile::Open(inputFiles[0]);
+  TFile *file0 = nullptr;
+  for (auto inputFile : inputFiles) {
+    file0 = TFile::Open(inputFile);
+    if (file0 && !file0->IsZombie() && file0->Get("Events")) break;
+    std::cout << "Cannot open " << inputFile << " for header probe, trying next..." << std::endl;
+    if (file0) { file0->Close(); file0 = nullptr; }
+  }
+  if (!file0) { std::cout << "No readable input file in this chunk, exiting." << std::endl; fout->Close(); std::exit(1); }
   Event ev0(file0);
   ev0.toBegin();
   auto l1Names = getObject<std::vector<std::string>>(ev0, "triggerMaker", "l1name");
@@ -861,6 +880,21 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
     }
     TTree* evtree = (TTree*)file->Get("Events");
     if (!evtree) { std::cout << "No Events tree in file, skipping..." << std::endl; file->Close(); continue; }
+
+    // MC produced by re-running the HLT privately keeps the un-pruned GEN record and the
+    // un-slimmed PU summary (both written by the HLT process), while samples that went
+    // through the central MiniAOD step carry the pruned/slimmed ones. Resolve per file so
+    // the same looper runs on either.
+    if (isMC) {
+      genPartsLabel = branchWithPrefix(evtree, "recoGenParticles_prunedGenParticles") ? "prunedGenParticles"
+                    : branchWithPrefix(evtree, "recoGenParticles_genParticles")       ? "genParticles"
+                    : genPartsLabel;
+      puInfoLabel   = branchWithPrefix(evtree, "PileupSummaryInfos_slimmedAddPileupInfo") ? "slimmedAddPileupInfo"
+                    : branchWithPrefix(evtree, "PileupSummaryInfos_addPileupInfo")        ? "addPileupInfo"
+                    : puInfoLabel;
+      if (iFile == 1)
+        std::cout << "GEN collection: " << genPartsLabel << ", PU collection: " << puInfoLabel << std::endl;
+    }
     auto nEventsFile = evtree->GetEntries();
     std::cout << "Input events: " << nEventsFile <<  "\n";
     Event ev(file);
@@ -942,7 +976,23 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
         }
 
       }
-
+      
+      if (isMC && process.Contains("_Par_")) {
+        auto genparts_forMuMu = getObject<std::vector<reco::GenParticle>>(ev, genPartsLabel, "");
+        int nMuon = 0;
+        int nQualifying = 0;
+        for (unsigned int iGen=0; iGen<genparts_forMuMu.size(); iGen++) {
+          auto candidate = genparts_forMuMu[iGen];
+          if (candidate.status()!=1 || candidate.pt()<=2.0 || abs(candidate.eta())>=2.5)
+            continue;
+          nQualifying++;
+          if (abs(candidate.pdgId())==13)
+            nMuon++;
+        }
+        if (nMuon<1 || nQualifying<2)
+          continue;
+      }
+      
       //
       if (isMC){
         //genWeight = (float) genEvtInfo->weight(); // EventInfo not available
@@ -1719,8 +1769,8 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
           if (bestIdx >= 0 && iMu < nhitsbeforesv_vtx.size()) {
             int bestOrigIdx = (int)SVsVtx.origIdx[bestIdx];
             bool foundDV = false;
-            for (unsigned int iDV=0; iDV<mu.vtxIndx().size(); ++iDV) {
-              if (mu.vtxIndx().at(iDV) == bestOrigIdx) {
+            for (unsigned int iDV=0; iMu<vtxIndxVtx.size() && iDV<vtxIndxVtx[iMu].size(); ++iDV) {
+              if (vtxIndxVtx[iMu].at(iDV) == bestOrigIdx) {
                 MuonsVtx.nhitsbeforesv.push_back(nhitsbeforesv_vtx.at(iMu).at(iDV));
                 MuonsVtx.ncompatible.push_back(ncompatible_vtx.at(iMu).at(iDV));
                 MuonsVtx.ncompatibletotal.push_back(ncompatibletotal_vtx.at(iMu).at(iDV));
@@ -1758,6 +1808,7 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
             TLorentzVector muVecForCorr; muVecForCorr.SetPtEtaPhiM(pt, eta, phi, MUON_MASS);
             float phiCorr = getCorrectedPhi(mu, muVecForCorr, dxyCorr, svx, svy);
             MuonsVtx.phiCorr.push_back(phiCorr);
+            MuonsVtx.vec.back().SetPtEtaPhiM(pt, eta, phiCorr, MUON_MASS);
           } 
           else {
             MuonsVtx.dxyCorr.push_back(0.);

@@ -4,13 +4,14 @@
 #############################################
 #############################################
 # 2024C/D/E/H/I: complete skims moved to Run3ScoutingSamples/May-27-2026/Data/<era>/ (flat, output_N.root).
-# 2024F/G: still in their single CRAB attempt dir; skims only ~12% / ~40% complete (CRAB tasks
-# stopped 2026-06-11 without recovery) -- do not use for physics until resubmitted.
+# 2024F: still in its single CRAB attempt dir (~12% complete); _recovery2a/2b running since 2026-11-02.
+# 2024G: original + _recovery + _recovery2 attempts merged into Nov-03-2026/Data/2024G/ (files prefixed
+# orig_/rec1_/rec2_), 293 files with duplicated lumis set aside in 2024G_duplicates/; 99.75% of golden lumis.
 DataC,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/May-27-2026/Data/2024C/
 DataD,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/May-27-2026/Data/2024D/
 DataE,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/May-27-2026/Data/2024E/
 DataF,/ceph/cms/store/group/Run3Scouting/RAWScouting_2p0/ScoutingPFRun3/crab_skim__2024F_ScoutingPFRun3_2p0/
-DataG,/ceph/cms/store/group/Run3Scouting/RAWScouting_2p0/ScoutingPFRun3/crab_skim__2024G_ScoutingPFRun3_2p0/
+DataG,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/Nov-03-2026/Data/2024G/
 DataH,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/May-27-2026/Data/2024H/
 DataI,/ceph/cms/store/group/Run3Scouting/Run3ScoutingSamples/May-27-2026/Data/2024I/
 #############################################

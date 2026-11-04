@@ -401,7 +401,7 @@ prependtodir = ""
 if not args.condor:
     prependtodir = "" if is_local else "/ceph/cms"
 else:
-    prependtodir = "root://redirector.t2.ucsd.edu:1095"
+    prependtodir = "root://redir.t2.ucsd.edu:1095"
 if not args.condor:
     cephbase = args.inDir if is_local else "/ceph/cms%s"%indir
     if args.inFile!="*" and args.inSample!="*":
@@ -418,7 +418,7 @@ if not args.condor:
             if (args.year in f) and (".root" in f) and os.path.isfile("%s/%s"%(cephbase,f)):
                 files.append("%s%s/%s"%(prependtodir,indir,f))
 else:
-    os.system('xrdfs redirector.t2.ucsd.edu:1095 ls %s > filein.txt'%indir)
+    os.system('xrdfs redir.t2.ucsd.edu:1095 ls %s > filein.txt'%indir)
     fin = open("filein.txt","r")
     for f in fin.readlines():
         f = f.strip("\n")
@@ -458,7 +458,7 @@ if not isData and args.weightMC and 'MinBias' not in args.inSample and 'QCD' not
     if "HTo2ZdTo2mu2x" in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
-                f_ = ROOT.TFile.Open(f.replace('davs://redirector.t2.ucsd.edu:1095//', '/ceph/cms/'))
+                f_ = ROOT.TFile.Open(f.replace('davs://redir.t2.ucsd.edu:1095//', '/ceph/cms/'))
             else:
                 f_ = ROOT.TFile.Open(f)
             h_ = f_.Get("counts").Clone("Clone_{}".format(_))
@@ -478,7 +478,7 @@ if not isData and args.weightMC and 'MinBias' not in args.inSample and 'QCD' not
     if 'BToPhi' in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
-                f_ = ROOT.TFile.Open(f.replace('davs://redirector.t2.ucsd.edu:1095//', '/ceph/cms/'))
+                f_ = ROOT.TFile.Open(f.replace('davs://redir.t2.ucsd.edu:1095//', '/ceph/cms/'))
             else:
                 f_ = ROOT.TFile.Open(f)
             h_ = f_.Get("counts").Clone("Clone_{}".format(_))
@@ -495,7 +495,7 @@ if not isData and args.weightMC and 'MinBias' not in args.inSample and 'QCD' not
     if "ScenarioB1" in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
-                f_ = ROOT.TFile.Open(f.replace('davs://redirector.t2.ucsd.edu:1095//', '/ceph/cms/'))
+                f_ = ROOT.TFile.Open(f.replace('davs://redir.t2.ucsd.edu:1095//', '/ceph/cms/'))
             else:
                 f_ = ROOT.TFile.Open(f)
             h_ = f_.Get("counts").Clone("Clone_{}".format(_))
@@ -511,7 +511,7 @@ if not isData and args.weightMC and 'MinBias' not in args.inSample and 'QCD' not
     if "ScenarioA" in sampleTag:
         for _,f in enumerate(files):
             if not args.condor:
-                f_ = ROOT.TFile.Open(f.replace('davs://redirector.t2.ucsd.edu:1095//', '/ceph/cms/'))
+                f_ = ROOT.TFile.Open(f.replace('davs://redir.t2.ucsd.edu:1095//', '/ceph/cms/'))
             else:
                 f_ = ROOT.TFile.Open(f)
             h_ = f_.Get("counts").Clone("Clone_{}".format(_))
@@ -726,9 +726,9 @@ def muattr(t, attr, idx, is_vtx):
     return getattr(t, 'Muon_' + attr)[idx]
 
 def mu_nhits(t, idx, is_vtx):
-    """Return nhitsbeforesv; Vtx muons have no such branch, return 0."""
+    """Return nhitsbeforesv for the noVtx or Vtx collection."""
     if is_vtx:
-        return 0
+        return t.Muon_vtx_nhitsbeforesv[idx]
     return t.Muon_nhitsbeforesv[idx]
 
 def vtx_muvec_corr(t, idx):

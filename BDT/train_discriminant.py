@@ -185,11 +185,12 @@ def parse_args():
                         help="Train only on this signal mass point (all its ctau values), e.g. 4:1.33 (dqcd) or 5 (hahm).")
     parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] | mzd[:ctau]",
                         help="Signal point(s) excluded from training (they go to the test set only).")
-    parser.add_argument("--resonance-veto", action=argparse.BooleanOptionalAction, default=True,
-                        help="Drop events whose SV1 dimuon mass is in a known-resonance window (as in the filler), "
-                             "signal and background, so the resonances stay an independent control sample.")
     parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
                         help="Keep only events with passL1 != 0.")
+    parser.add_argument("--hit-preselection", action=argparse.BooleanOptionalAction, default=True,
+                        help="Preselection on N_excess = SV1_mu1_nhitsbeforesv + SV1_mu2_nhitsbeforesv, signal and "
+                             "background: 0 for lxy < 11 cm, <= 1 for 11-16 cm, <= 2 above 16 cm. Saved in the "
+                             "manifests; evaluate_workingpoint, data_at_wp and make_fit_inputs apply it from there.")
 
     # --- conditional / parametric inputs ---
     parser.add_argument("--conditional", action=argparse.BooleanOptionalAction, default=False,
@@ -251,7 +252,7 @@ class Config:
     mass_point: tuple
     holdout: list
     require_l1: bool
-    resonance_veto: bool
+    hit_preselection: bool
     conditional: bool
     cond_vars: list          # e.g. ["mratio", "ctau"]
     cond_columns: list       # e.g. ["param_mratio", "param_ctau"]; empty if not conditional
@@ -294,7 +295,7 @@ def build_config(args):
         mass_point=tuple(float(x) for x in args.mass_point.split(":")) if args.mass_point else None,
         holdout=parse_holdout(args.holdout, n_mass) if args.holdout else [],
         require_l1=args.require_l1,
-        resonance_veto=args.resonance_veto,
+        hit_preselection=args.hit_preselection,
         conditional=args.conditional,
         cond_vars=cond_vars,
         cond_columns=[COND_COLUMN[v] for v in cond_vars] if args.conditional else [],
@@ -371,7 +372,7 @@ READ_THREADS  = max(1, int(os.environ.get("WP_READ_THREADS", "4")))
 READ_EXECUTOR = ThreadPoolExecutor(max_workers=READ_THREADS) if READ_THREADS > 1 else None
 
 
-def read_tuple(path, cfg, step=2_000_000):
+def read_tuple(path, cfg, step=2_000_000, veto=True):
     """Read the needed branches of one ROOT file into a float32 dataframe (low peak memory)."""
     with uproot.open(path) as f:
         tree     = f["tuples"]
@@ -398,9 +399,17 @@ def read_tuple(path, cfg, step=2_000_000):
 
     if cfg.require_l1:
         df = df[df["passL1"] > 0.5].reset_index(drop=True)
-    if cfg.resonance_veto:
+    if veto:
         df = df[~in_resonance_window(df["SV1_mass"].to_numpy())].reset_index(drop=True)
+    if cfg.hit_preselection:
+        df = df[pass_hit_preselection(df["SV1_lxy"].to_numpy(), df["SV1_mu1_nhitsbeforesv"].to_numpy(),
+                                      df["SV1_mu2_nhitsbeforesv"].to_numpy())].reset_index(drop=True)
     return df
+
+
+def pass_hit_preselection(lxy, nh1, nh2):
+    n = nh1 + nh2
+    return np.where(lxy < 11.0, n <= 0, np.where(lxy < 16.0, n <= 1, n <= 2))
 
 
 def add_dxy_over_lxy(df):
@@ -415,7 +424,7 @@ def add_dxy_over_lxy(df):
 def load_signal(cfg, signal_files):
     frames = []
     for path, point, sig_model in signal_files:
-        df = read_tuple(path, cfg)
+        df = read_tuple(path, cfg, veto=False)
         for param, value in zip(MASS_PARAMS[sig_model], point[:-1]):
             df[f"param_{param}"] = value
         df["param_ctau"]   = point[-1]
@@ -890,7 +899,8 @@ def write_manifest(path, model_file, lxy_label, features, importance, cfg, signa
         "cond_var":           cfg.cond_vars if cfg.conditional else None,
         "cond_vars":          cfg.cond_columns,
         "require_l1":         cfg.require_l1,
-        "resonance_veto":     cfg.resonance_veto,
+        "resonance_veto":     "background",
+        "hit_preselection":   cfg.hit_preselection,
         "tuples_subdir":      "+".join(d.name for d in cfg.signal_dirs.values()),
         "lxy_bin":            lxy_label,
         "lxy_range_cm":       [LXY_BINS[i], LXY_BINS[i + 1]],
