@@ -29,7 +29,6 @@ BRANCHES = ["SV1_mass", "SV1_lxy", "SV1_mu1_nhitsbeforesv", "SV1_mu2_nhitsbefore
 
 KEYS = None
 HAS_BPLUS = None
-LIFETIME_WEIGHT = None
 
 
 def event_key(lumi, evtn):
@@ -39,8 +38,8 @@ def event_key(lumi, evtn):
 def read_looper(path):
     with uproot.open(path) as f:
         counts = float(f["counts"].values(flow=True).sum())
-        a = f["tout"].arrays(["lumi", "evtn", "nGenBplus", "wGenBplus"], library="np")
-    return counts, event_key(a["lumi"], a["evtn"]), a["nGenBplus"] > 0, a["wGenBplus"]
+        a = f["tout"].arrays(["lumi", "evtn", "nGenBplus"], library="np")
+    return counts, event_key(a["lumi"], a["evtn"]), a["nGenBplus"] > 0
 
 
 def fill(hist, mass, lxy, weight=1):
@@ -53,7 +52,6 @@ def scan(task):
     path, start, stop, is_mc = task
     shape = (len(LXY_BINS), len(MASS_EDGES) - 1)
     total, no_bplus = np.zeros(shape, np.int64), np.zeros(shape, np.int64)
-    reweighted, reweighted2 = np.zeros(shape), np.zeros(shape)
     with uproot.open(path) as f:
         for c in f["tuples"].iterate(BRANCHES, library="np", step_size=STEP, entry_start=start, entry_stop=stop):
             m, lxy = c["SV1_mass"], c["SV1_lxy"]
@@ -72,21 +70,17 @@ def scan(task):
             fill(total, m[sel], lxy[sel])
             keep = sel & ~HAS_BPLUS[i]
             fill(no_bplus, m[keep], lxy[keep])
-            w = LIFETIME_WEIGHT[i[sel]].astype(np.float64)
-            fill(reweighted, m[sel], lxy[sel], w)
-            fill(reweighted2, m[sel], lxy[sel], w * w)
-    return total, no_bplus, reweighted, reweighted2
+    return total, no_bplus
 
 
 def scan_all():
-    global KEYS, HAS_BPLUS, LIFETIME_WEIGHT
+    global KEYS, HAS_BPLUS
     files = sorted(glob.glob(LOOPER))
     with ProcessPoolExecutor(8) as ex:
         looper = list(ex.map(read_looper, files))
     keys = np.concatenate([r[1] for r in looper])
     order = np.argsort(keys)
     KEYS, HAS_BPLUS = keys[order], np.concatenate([r[2] for r in looper])[order]
-    LIFETIME_WEIGHT = np.concatenate([r[3] for r in looper])[order]
     counts = sum(r[0] for r in looper)
     print(f"{len(files)} looper files, {len(KEYS)} events, {counts / TOTAL_LOOPER_EVENTS:.1%} of MinBias")
     with uproot.open(MINBIAS) as f:
@@ -95,11 +89,10 @@ def scan_all():
         mc = list(ex.map(scan, [(MINBIAS, i, min(i + ENTRIES_PER_TASK, n), True)
                                 for i in range(0, n, ENTRIES_PER_TASK)]))
         data = list(ex.map(scan, [(p, None, None, False) for p in sorted(glob.glob(DATA))], chunksize=4))
-    return (sum(r[0] for r in mc), sum(r[1] for r in mc), sum(r[2] for r in mc), sum(r[3] for r in mc),
-            sum(r[0] for r in data), counts)
+    return sum(r[0] for r in mc), sum(r[1] for r in mc), sum(r[0] for r in data), counts
 
 
-def plot(mc_all, mc_veto, mc_rew, data, counts, show_reweighted=True):
+def plot(mc_all, mc_veto, data, counts):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -115,13 +108,10 @@ def plot(mc_all, mc_veto, mc_rew, data, counts, show_reweighted=True):
         d, a, v = data[il].astype(float), mc_all[il] * weight, mc_veto[il] * weight
         nz = d > 0
         b = a - v
-        r = mc_rew[il] * weight
         ax.stairs(a, MASS_EDGES, color="black", lw=1.5, ls="--", label=f"MinBias, all: {a.sum():,.0f}")
         ax.stairs(b, MASS_EDGES, color="#d62728", lw=2, label=f"MinBias, matched (gen $B^\\pm$ in event): {b.sum():,.0f}")
         ax.stairs(v, MASS_EDGES, fill=True, alpha=0.35, color="tab:blue", label=f"MinBias, anti-matched (no gen $B^\\pm$): {v.sum():,.0f}")
         ax.stairs(v, MASS_EDGES, color="tab:blue")
-        if show_reweighted:
-            ax.stairs(r, MASS_EDGES, color="tab:green", lw=2, label=f"MinBias, $B^\\pm$ lifetime reweighted: {r.sum():,.0f}")
         ax.errorbar(centers[nz], d[nz], yerr=np.sqrt(d[nz]), fmt="o", color="black", ms=3, label=f"Data: {d.sum():,.0f}")
         ax.set_yscale("log")
         ax.set_ylim(0.5, max(d.max(), a.max(), 1.0) * 30000)
@@ -131,8 +121,6 @@ def plot(mc_all, mc_veto, mc_rew, data, counts, show_reweighted=True):
         with np.errstate(divide="ignore", invalid="ignore"):
             rx.plot(centers[nz], (a / d)[nz], "o", ms=3, mfc="none", color="black", label="All")
             rx.plot(centers[nz], (v / d)[nz], "o", ms=3, color="tab:blue", label="Anti-matched")
-            if show_reweighted:
-                rx.plot(centers[nz], (r / d)[nz], "s", ms=3, color="tab:green", label="Reweighted")
         rx.axhline(1, color="gray", ls="--", lw=1)
         if il < 2:
             rx.set_ylim(0.0, 2.0)
@@ -147,10 +135,9 @@ def plot(mc_all, mc_veto, mc_rew, data, counts, show_reweighted=True):
         rx.set_xticklabels([str(t) for t in ticks])
         rx.minorticks_off()
         rx.set_xlabel(r"SV1 $m_{\mu\mu}$ [GeV]")
-        name = "minbias_no_bplus" if show_reweighted else "minbias_no_bplus_noreweight"
-        fig.savefig(OUT_DIR / f"{name}_lxy_{tag}.png", dpi=150, bbox_inches="tight")
+        fig.savefig(OUT_DIR / f"minbias_no_bplus_lxy_{tag}.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
-    print(f"wrote {OUT_DIR}/{name}_lxy_*.png")
+    print(f"wrote {OUT_DIR}/minbias_no_bplus_lxy_*.png")
 
 
 def main():
@@ -159,11 +146,10 @@ def main():
     args = parser.parse_args()
     OUT_DIR.mkdir(exist_ok=True)
     if not args.replot:
-        mc_all, mc_veto, mc_rew, mc_rew2, data, counts = scan_all()
-        np.savez(CACHE, mc_all=mc_all, mc_veto=mc_veto, mc_rew=mc_rew, mc_rew2=mc_rew2, data=data, counts=counts)
+        mc_all, mc_veto, data, counts = scan_all()
+        np.savez(CACHE, mc_all=mc_all, mc_veto=mc_veto, data=data, counts=counts)
     with np.load(CACHE) as z:
-        for show_reweighted in (True, False):
-            plot(z["mc_all"], z["mc_veto"], z["mc_rew"], z["data"], float(z["counts"]), show_reweighted)
+        plot(z["mc_all"], z["mc_veto"], z["data"], float(z["counts"]))
 
 
 if __name__ == "__main__":
