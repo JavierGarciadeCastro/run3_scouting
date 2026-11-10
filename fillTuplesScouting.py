@@ -716,6 +716,10 @@ for _cb in EVENT_COUNT_BRANCHES:
 EVENT_INFO_BRANCHES = ["run", "lumi", "evtn", "nPUTrue", "wPU"]
 for _eb in EVENT_INFO_BRANCHES:
     branches[_eb] = []
+GEN_B_BRANCHES = ["nGenBplus"]
+for _gb in GEN_B_BRANCHES:
+    branches[_gb] = []
+HAS_GEN_B = bool(t.GetBranch("nGenBplus"))
 
 
 
@@ -730,6 +734,13 @@ def mu_nhits(t, idx, is_vtx):
     if is_vtx:
         return t.Muon_vtx_nhitsbeforesv[idx]
     return t.Muon_nhitsbeforesv[idx]
+
+def muon_ip_pv(t, idx, is_vtx):
+    phi = muattr(t, 'phi', idx, is_vtx)
+    eta = muattr(t, 'eta', idx, is_vtx)
+    dxy_pv = muattr(t, 'dxy', idx, is_vtx) + t.PV_x*np.sin(phi) - t.PV_y*np.cos(phi)
+    dz_pv = muattr(t, 'dz', idx, is_vtx) - t.PV_z + (t.PV_x*np.cos(phi) + t.PV_y*np.sin(phi))*np.sinh(eta)
+    return dxy_pv, dz_pv
 
 def vtx_muvec_corr(t, idx):
     vec = ROOT.TLorentzVector()
@@ -754,6 +765,8 @@ for e in range(firste,laste):
         branches[_cb].append(-1.)    # event-level; overwritten with the real value below
     for _eb in EVENT_INFO_BRANCHES:
         branches[_eb].append(-1.)    # event-level; overwritten with the real value below
+    for _gb in GEN_B_BRANCHES:
+        branches[_gb].append(-1.)
 
     # Access event
     t.GetEntry(e)
@@ -765,6 +778,9 @@ for e in range(firste,laste):
         branches[_cb][-1] = float(getattr(t, _cb))
     for _eb in EVENT_INFO_BRANCHES:
         branches[_eb][-1] = float(getattr(t, _eb))
+    if HAS_GEN_B:
+        for _gb in GEN_B_BRANCHES:
+            branches[_gb][-1] = float(getattr(t, _gb))
     if args.requireL1 and not t.passL1:
         continue
     if len(args.noSeed) > 0:
@@ -1448,6 +1464,8 @@ for e in range(firste,laste):
             _sv_slot = "SV2"
         else:
             break
+        _mu1_dxyPV, _mu1_dzPV = muon_ip_pv(t, mu1idx, is_vtx)
+        _mu2_dxyPV, _mu2_dzPV = muon_ip_pv(t, mu2idx, is_vtx)
         _mu1_eta_ntup  = muattr(t, 'eta',      mu1idx, is_vtx)
         _mu2_eta_ntup  = muattr(t, 'eta',      mu2idx, is_vtx)
         _mu1_phi_ntup  = muattr(t, 'phi',      mu1idx, is_vtx)
@@ -1489,10 +1507,10 @@ for e in range(firste,laste):
         branches[f"{_sv_slot}_mu1_normChi2"][-1]                   = _mu1_nchi2
         branches[f"{_sv_slot}_mu1_dxy"][-1]                        = _mu1_dxyCr
         branches[f"{_sv_slot}_mu1_dxyErr"][-1]                     = _mu1_dxye
-        branches[f"{_sv_slot}_mu1_dxysig"][-1]                     = muattr(t, 'dxysig',                  mu1idx, is_vtx)
-        branches[f"{_sv_slot}_mu1_dz"][-1]                         = muattr(t, 'dz',                      mu1idx, is_vtx)
+        branches[f"{_sv_slot}_mu1_dxysig"][-1]                     = _mu1_dxyPV/muattr(t, 'dxye', mu1idx, is_vtx)
+        branches[f"{_sv_slot}_mu1_dz"][-1]                         = _mu1_dzPV
         branches[f"{_sv_slot}_mu1_dze"][-1]                        = muattr(t, 'dze',                     mu1idx, is_vtx)
-        branches[f"{_sv_slot}_mu1_dzsig"][-1]                      = muattr(t, 'dzsig',                   mu1idx, is_vtx)
+        branches[f"{_sv_slot}_mu1_dzsig"][-1]                      = _mu1_dzPV/muattr(t, 'dze', mu1idx, is_vtx)
         branches[f"{_sv_slot}_mu1_nhitsbeforesv"][-1]              = mu_nhits(t, mu1idx, is_vtx)
         branches[f"{_sv_slot}_mu1_isGlobal"][-1]                   = muattr(t, 'isGlobal',                mu1idx, is_vtx)
         branches[f"{_sv_slot}_mu1_isTracker"][-1]                  = muattr(t, 'isTracker',               mu1idx, is_vtx)
@@ -1545,10 +1563,10 @@ for e in range(firste,laste):
         branches[f"{_sv_slot}_mu2_normChi2"][-1]                   = _mu2_nchi2
         branches[f"{_sv_slot}_mu2_dxy"][-1]                        = _mu2_dxyCr
         branches[f"{_sv_slot}_mu2_dxyErr"][-1]                     = _mu2_dxye
-        branches[f"{_sv_slot}_mu2_dxysig"][-1]                     = muattr(t, 'dxysig',                  mu2idx, is_vtx)
-        branches[f"{_sv_slot}_mu2_dz"][-1]                         = muattr(t, 'dz',                      mu2idx, is_vtx)
+        branches[f"{_sv_slot}_mu2_dxysig"][-1]                     = _mu2_dxyPV/muattr(t, 'dxye', mu2idx, is_vtx)
+        branches[f"{_sv_slot}_mu2_dz"][-1]                         = _mu2_dzPV
         branches[f"{_sv_slot}_mu2_dze"][-1]                        = muattr(t, 'dze',                     mu2idx, is_vtx)
-        branches[f"{_sv_slot}_mu2_dzsig"][-1]                      = muattr(t, 'dzsig',                   mu2idx, is_vtx)
+        branches[f"{_sv_slot}_mu2_dzsig"][-1]                      = _mu2_dzPV/muattr(t, 'dze', mu2idx, is_vtx)
         branches[f"{_sv_slot}_mu2_nhitsbeforesv"][-1]              = mu_nhits(t, mu2idx, is_vtx)
         branches[f"{_sv_slot}_mu2_isGlobal"][-1]                   = muattr(t, 'isGlobal',                mu2idx, is_vtx)
         branches[f"{_sv_slot}_mu2_isTracker"][-1]                  = muattr(t, 'isTracker',               mu2idx, is_vtx)

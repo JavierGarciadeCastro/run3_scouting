@@ -533,6 +533,7 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
   bool passL1, passHLT;
   float nPV, PV_x, PV_y, PV_z;
   float GenB_pt, GenB_eta;
+  int nGenBplus;
   int nMuons_NoVtx;
   int nMuons_Vtx;
   int nSVs_NoVtx;
@@ -612,6 +613,7 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
   tout->Branch("GenPart_ct", &GenParts.ct);
   tout->Branch("GenB_pt", &GenB_pt);
   tout->Branch("GenB_eta", &GenB_eta);
+  tout->Branch("nGenBplus", &nGenBplus);
 
   //NoVtx SV branches
   tout->Branch("nSVs_NoVtx", &nSVs_NoVtx);
@@ -1074,10 +1076,13 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
       // GenPart
       std::vector<int> matchIndex;
       std::vector<float> cts;
+      nGenBplus = 0;
       if (isMC) {
         auto genparts = getObject<std::vector<reco::GenParticle>>(ev, genPartsLabel, "");
         for (unsigned int iGen=0; iGen<genparts.size(); iGen++) {
           auto genpart = genparts[iGen];
+          if (abs(genpart.pdgId())==521 && genpart.numberOfDaughters()>0 && abs(genparts[genpart.daughterRef(0).index()].pdgId())!=521)
+            nGenBplus++;
           if (abs(genpart.pdgId())!=13 && // Muon
               abs(genpart.pdgId())!=999999 && // Dark photon
               abs(genpart.pdgId())!=9900015 && // Dark photon (inconsistent with datacards)
