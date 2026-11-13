@@ -534,6 +534,8 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
   float nPV, PV_x, PV_y, PV_z;
   float GenB_pt, GenB_eta;
   int nGenBplus;
+  std::vector<float> GenBplus_ct;
+  std::vector<int> GenBplus_type;
   int nMuons_NoVtx;
   int nMuons_Vtx;
   int nSVs_NoVtx;
@@ -614,6 +616,8 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
   tout->Branch("GenB_pt", &GenB_pt);
   tout->Branch("GenB_eta", &GenB_eta);
   tout->Branch("nGenBplus", &nGenBplus);
+  tout->Branch("GenBplus_ct", &GenBplus_ct);
+  tout->Branch("GenBplus_type", &GenBplus_type);
 
   //NoVtx SV branches
   tout->Branch("nSVs_NoVtx", &nSVs_NoVtx);
@@ -1077,12 +1081,12 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
       std::vector<int> matchIndex;
       std::vector<float> cts;
       nGenBplus = 0;
+      GenBplus_ct.clear();
+      GenBplus_type.clear();
       if (isMC) {
         auto genparts = getObject<std::vector<reco::GenParticle>>(ev, genPartsLabel, "");
         for (unsigned int iGen=0; iGen<genparts.size(); iGen++) {
           auto genpart = genparts[iGen];
-          if (abs(genpart.pdgId())==521 && genpart.numberOfDaughters()>0 && abs(genparts[genpart.daughterRef(0).index()].pdgId())!=521)
-            nGenBplus++;
           if (abs(genpart.pdgId())!=13 && // Muon
               abs(genpart.pdgId())!=999999 && // Dark photon
               abs(genpart.pdgId())!=9900015 && // Dark photon (inconsistent with datacards)
@@ -1096,17 +1100,18 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
               abs(genpart.pdgId())!=1023 && // Dark photon from Higgs
               abs(genpart.pdgId())!=25 && // Higgs
               abs(genpart.pdgId())!=6000211 && // Scalar from b-hadrons
-              abs(genpart.pdgId())!=443) // JPsi
+              abs(genpart.pdgId())!=443 && // JPsi
+              abs(genpart.pdgId())!=521) // BPlus
             continue;
           if (!genpart.isLastCopy())
             continue;
 
           int motherIdx = -1, motherPdgId = 0;
-          reco::GenParticle lastCopy=genpart; // Default value
+          reco::GenParticle firstCopy=genpart; // Default value
           if (genpart.numberOfMothers() > 0) {
             motherIdx = genpart.motherRef().index();
             while (genparts[motherIdx].pdgId() == genpart.pdgId()) {
-              lastCopy = genparts[motherIdx];
+              firstCopy = genparts[motherIdx];
               motherIdx = genparts[motherIdx].motherRef().index();
             }
             motherPdgId = genparts[motherIdx].pdgId();
@@ -1125,16 +1130,38 @@ void run3ScoutingLooper(std::vector<TString> inputFiles, TString year, TString p
           GenParts.motherIndex.push_back(motherIdx);
           GenParts.motherPdgId.push_back(motherPdgId);
           // Generator-level information for lifetime reweighting
-          int daughterIndex = -1;
           if (genpart.pdgId()==13) {
             if (motherPdgId==1023 || motherPdgId==9900015 || motherPdgId==6000211) {
-              float vx1 = lastCopy.vx() * 10.; // mm
-              float vy1 = lastCopy.vy() * 10.; // mm
+              float vx1 = firstCopy.vx() * 10.; // mm
+              float vy1 = firstCopy.vy() * 10.; // mm
               float vx0 = genparts[motherIdx].vx() * 10.; // mm
               float vy0 = genparts[motherIdx].vy() * 10.; // mm
               matchIndex.push_back(motherIdx);
               cts.push_back ( ((vx1 - vx0)*genparts[motherIdx].px() + (vy1 - vy0)*genparts[motherIdx].py())*genparts[motherIdx].mass()/(genparts[motherIdx].pt()*genparts[motherIdx].pt()) ); // in mm
             }
+          }
+          // Generator-level information for lifetime reweighting in special B+ case
+          if (abs(genpart.pdgId())==521 && genpart.numberOfDaughters()>0 && abs(genparts[genpart.daughterRef(0).index()].pdgId())!=521) {
+            nGenBplus++;
+            float vx0 = genpart.vx() * 10.; // mm
+            float vy0 = genpart.vy() * 10.; // mm
+            float vx1 = genparts[genpart.daughterRef(0).index()].vx() * 10.; // mm
+            float vy1 = genparts[genpart.daughterRef(0).index()].vy() * 10.; // mm
+            GenBplus_ct.push_back(((vx1 - vx0)*genpart.px() + (vy1 - vy0)*genpart.py())*genpart.mass()/(genpart.pt()*genpart.pt()));
+            std::vector<int> daughterPdgIds;
+            int BPlus_type = 3;
+            for (unsigned int id=0; id<genpart.numberOfDaughters(); id++) {
+              daughterPdgIds.push_back(abs(genparts[genpart.daughterRef(id).index()].pdgId()));
+            }
+            if ((std::find(daughterPdgIds.begin(), daughterPdgIds.end(), 11) != daughterPdgIds.end()) || (std::find(daughterPdgIds.begin(), daughterPdgIds.end(), 13) != daughterPdgIds.end()) || (std::find(daughterPdgIds.begin(), daughterPdgIds.end(), 15) != daughterPdgIds.end()))
+              BPlus_type = 0;
+            else if (std::find(daughterPdgIds.begin(), daughterPdgIds.end(), 443) != daughterPdgIds.end())
+              BPlus_type = 1;
+            else if (std::find(daughterPdgIds.begin(), daughterPdgIds.end(), 100443) != daughterPdgIds.end())
+              BPlus_type = 2;
+            else 
+              BPlus_type = 3;
+            GenBplus_type.push_back(BPlus_type);
           }
         }
         // Set the ct's values for the genParticles

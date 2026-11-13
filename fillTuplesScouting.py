@@ -720,6 +720,15 @@ GEN_B_BRANCHES = ["nGenBplus"]
 for _gb in GEN_B_BRANCHES:
     branches[_gb] = []
 HAS_GEN_B = bool(t.GetBranch("nGenBplus"))
+# Event-level weights, stored only (not applied to the ntuple content)
+EVENT_WEIGHT_BRANCHES = ["lumiweight", "bweight", "puweight", "tbweight"]
+for _wb in EVENT_WEIGHT_BRANCHES:
+    branches[_wb] = []
+# Per-candidate weights, stored per SV slot (SV1_*, SV2_*)
+SV_WEIGHT_BRANCHES = ["tweight", "sf_trg", "sf_trg_up", "sf_trg_down", "sf_sel", "sf_sel_up", "sf_sel_down"]
+for sv in ["SV1", "SV2"]:
+    for _wb in SV_WEIGHT_BRANCHES:
+        branches[f"{sv}_{_wb}"] = []
 
 
 
@@ -767,6 +776,11 @@ for e in range(firste,laste):
         branches[_eb].append(-1.)    # event-level; overwritten with the real value below
     for _gb in GEN_B_BRANCHES:
         branches[_gb].append(-1.)
+    for _wb in EVENT_WEIGHT_BRANCHES:
+        branches[_wb].append(-1.)    # event-level; overwritten with the real value below
+    for sv in ["SV1", "SV2"]:
+        for _wb in SV_WEIGHT_BRANCHES:
+            branches[f"{sv}_{_wb}"].append(-1.)
 
     # Access event
     t.GetEntry(e)
@@ -815,6 +829,18 @@ for e in range(firste,laste):
     if 'BToPhi' in sampleTag and applyBweights and not isData:
         cset = correctionlib.CorrectionSet.from_file("data/b-hadron_weights.json")
         bweight = cset['PT_weight'].evaluate(t.GenB_pt, 'nominal')
+
+    # Lifetime re-weighting (just for Minimum Bias, for signal it's applied after)
+    tbweight = 1.0
+    if "MinBias" in sampleTag:
+        for ict in range(0, len(t.GenBplus_ct)):
+            tbweight = tbweight * (4.9106/0.49106) * math.exp(t.GenBplus_ct[ict]/4.9106 - t.GenBplus_ct[ict]/0.49106)
+
+    # Store event-level weights in the ntuple
+    branches["lumiweight"][-1] = float(lumiweight)
+    branches["bweight"][-1]    = float(bweight)
+    branches["puweight"][-1]   = float(puweight)
+    branches["tbweight"][-1]   = float(tbweight)
 
     # Event info
     event_weight = lumiweight*bweight*puweight
@@ -1653,6 +1679,14 @@ for e in range(firste,laste):
         if not isData and not args.noSF:
             sf_trg, sf_trg_up, sf_trg_down = getTriggerSF(subpt, lxy)
             sf_sel, sf_sel_up, sf_sel_down = getSelectionSF(lxy)
+        # Store per-candidate weights in this candidate's SV slot
+        branches[f"{_sv_slot}_tweight"][-1]     = float(tweight)
+        branches[f"{_sv_slot}_sf_trg"][-1]      = float(sf_trg)
+        branches[f"{_sv_slot}_sf_trg_up"][-1]   = float(sf_trg_up)
+        branches[f"{_sv_slot}_sf_trg_down"][-1] = float(sf_trg_down)
+        branches[f"{_sv_slot}_sf_sel"][-1]      = float(sf_sel)
+        branches[f"{_sv_slot}_sf_sel_up"][-1]   = float(sf_sel_up)
+        branches[f"{_sv_slot}_sf_sel_down"][-1] = float(sf_sel_down)
         if ( (not filledcat4musep) and (not filledcat4muosv) and (not filledcat2mu) ): 
             slice = ""
             if dphisvu < dphisvcut:
