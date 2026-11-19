@@ -10,8 +10,9 @@
   bool doUpAndDownVariations = true;
   if (!useSignalMC)
     doUpAndDownVariations = false;
-TString period = "2022"; // Either 2022 or 2023
-TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : ScenarioA : BToPhi
+TString period = "2024"; // Either 2022 or 2023
+TString model = "ScenarioA"; // Either HTo2ZdTo2mu2x : ScenarioB1 : ScenarioA : BToPhi
+  bool bdtRegions = true;
 
   // Dir with the RooDataSets
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Jul-02-2024_2022_SRsOnly"; // last 2022
@@ -28,7 +29,8 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Feb-20-2025_2022";
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Feb-25-2025_2023";
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Feb-25-2025_2022";
-  TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Feb-25-2025_allYears"; // This is for HAHM
+  //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Feb-25-2025_allYears"; // This is for HAHM
+  TString inDir = "fitInputs/2024_pnn/dqcd_mratio_WP_tight";
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Jun-05-2025_allEras_forDQCDAnalysis"; // This is for DQCD
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Sep-24-2025_allEras_forDQCDAnalysisAndBPhi/"; // This is for DQCD
   //TString inDir = "/ceph/cms/store/user/fernance/Run3ScoutingOutput/outputHistograms_Oct-01-2025_allEras_BToPhiAnalysis_RooOnly/"; // This is for BToPhi with extension
@@ -37,6 +39,16 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
 
   // Names of the search regions: They should be picked accordingly to the model/fit it has to be done
   vector<TString> dNames = { };
+  if (bdtRegions) {
+  dNames.push_back("d_Dimuon_lxy0p0to0p2_bdt");
+  dNames.push_back("d_Dimuon_lxy0p2to1p0_bdt");
+  dNames.push_back("d_Dimuon_lxy1p0to2p4_bdt");
+  dNames.push_back("d_Dimuon_lxy2p4to3p1_bdt");
+  dNames.push_back("d_Dimuon_lxy3p1to7p0_bdt");
+  dNames.push_back("d_Dimuon_lxy7p0to11p0_bdt");
+  dNames.push_back("d_Dimuon_lxy11p0to16p0_bdt");
+  dNames.push_back("d_Dimuon_lxy16p0to70p0_bdt");
+  } else {
   //dNames.push_back("d_FourMu_sep");
   //dNames.push_back("d_Dimuon_lxy0p0to0p2_inclusive");
   //dNames.push_back("d_Dimuon_lxy0p2to1p0_inclusive");
@@ -90,6 +102,7 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
   dNames.push_back("d_Dimuon_lxy11p0to16p0_non-pointing");
   dNames.push_back("d_Dimuon_lxy16p0to70p0_non-pointing");
   //dNames.push_back("");
+  }
 
   // Eras (to be uncommented when adding 2023 and splitting in eras)
   std::vector<std::pair<TString, TString>> periods; // first: year, second: era
@@ -106,6 +119,9 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
     periods.emplace_back("2023", "2022postEE");
     periods.emplace_back("2023", "2023");
     periods.emplace_back("2023", "2023BPix");
+  } else if (period=="2024") {
+    eras.push_back("2024");
+    periods.emplace_back("2024", "2024");
   } else if (period=="allEras") {
     eras.push_back("2022");
     eras.push_back("2022postEE");
@@ -212,6 +228,27 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
             }
         }
 
+    }
+  } else if (model=="ScenarioA" && period=="2024") {
+    if ( useSignalMC ) {
+        std::ifstream infile("data/ScenarioA_2024_points.txt");
+        std::string line;
+        while (std::getline(infile, line)) {
+          float mpi, mA, ctau;
+          std::istringstream iss(line);
+          if (!(iss >> mpi >> mA >> ctau)) {
+            std::cerr << "No valid line: " << line << std::endl;
+            continue;
+          }
+          TString mpiString = Form("%g", mpi);  mpiString.ReplaceAll(".", "p");
+          TString mAString = Form("%g", mA);    mAString.ReplaceAll(".", "p");
+          TString ctauString = Form("%g", ctau); ctauString.ReplaceAll(".", "p");
+          sigsamples.push_back(Form("Signal_ScenarioA_Mpi-%s_MA-%s_ctau-%smm",mpiString.Data(),mAString.Data(),ctauString.Data()));
+          sigmasses_2mu.push_back(mA);
+          sigmasses_4mu.push_back(mpi);
+          sigmasses_ctau.push_back(ctau);
+          std::cout << "Reading signal sample: " << sigsamples.back() << std::endl;
+        }
     }
   } else if (model=="ScenarioA") {
     if ( useSignalMC ) {
@@ -347,6 +384,8 @@ TString model = "HTo2ZdTo2mu2x"; // Either HTo2ZdTo2mu2x : ScenarioB1 : Scenario
        dataEras.push_back("_DataC_");
      } else if (era=="2023BPix" && year=="2023") {
        dataEras.push_back("_DataD_");
+     } else if (era=="2024" && year=="2024") {
+       dataEras.push_back("_Data2024_");
      }
      // Loop over data files
      int idata = 0;

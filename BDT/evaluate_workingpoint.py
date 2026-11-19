@@ -88,7 +88,7 @@ _parser.add_argument("--sig-dir", default=None,
 _parser.add_argument("--out-name", default=None,
                      help="Tag of the TRAINING run (the --out-name given to training). Without --model-dir the "
                           "model folder is looked up as BDT/{BDT,PNN}_output/{parametrized,unparametrized}/"
-                          "<signal>[_<cond vars>][_L1req][_holdout-...][_<tag>]. Eval plots are written under "
+                          "<signal>[_<cond vars>][_noL1][_holdout-...][_<tag>]. Eval plots are written under "
                           "<that dir>/eval_testonly/.")
 _parser.add_argument("--model-dir", default=None, metavar="PATH",
                      help="Explicit path to the training run's Scenario output folder (the one "
@@ -98,8 +98,8 @@ _parser.add_argument("--model-dir", default=None, metavar="PATH",
                           "dataset-related flags (--scenario/--conditional/--cond-var/--holdout/"
                           "--require-l1/--mass-point/--sig-dir/--mratio-grid) must still match "
                           "the training run, since they control the reconstructed train/test split.")
-_parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
-                     help="Must match the --require-l1 used for training.")
+_parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=None,
+                     help="Default: as in the training manifest.")
 _parser.add_argument("--hit-preselection", action=argparse.BooleanOptionalAction, default=None,
                      help="Preselection on N_excess = SV1_mu1_nhitsbeforesv + SV1_mu2_nhitsbeforesv, signal and "
                           "background: 0 for lxy < 11 cm, <= 1 for 11-16 cm, <= 2 above 16 cm. Default: as in the "
@@ -195,7 +195,7 @@ if _args.model_dir is not None:
 else:
     _leaf = (MODEL + (SCENARIO if MODEL != "hahm" and SCENARIO != "A" else "")
              + ("_" + "_".join(COND_VAR) if use_conditional else "")
-             + ('_L1req' if REQUIRE_L1 else '') + HOLD_TAG
+             + ('_noL1' if REQUIRE_L1 is False else '') + HOLD_TAG
              + (f"_{_args.out_name}" if _args.out_name else ""))
     _cands = [_HERE / top / ("parametrized" if use_conditional else "unparametrized") / _leaf
               for top in ("BDT_output", "PNN_output")]
@@ -220,6 +220,17 @@ if _args.hit_preselection is not None and _args.hit_preselection != _train_hitpr
           f"(hit_preselection={_train_hitpre}); evaluating with the command-line choice.")
 HIT_PRESELECTION = _train_hitpre if _args.hit_preselection is None else _args.hit_preselection
 print(f"Hit preselection (N_excess): {HIT_PRESELECTION}")
+_train_l1 = bool(_train_man.get('require_l1', False))
+if REQUIRE_L1 is not None and REQUIRE_L1 != _train_l1:
+    print(f"WARNING: --{'' if REQUIRE_L1 else 'no-'}require-l1 differs from the training "
+          f"(require_l1={_train_l1}); evaluating with the command-line choice.")
+REQUIRE_L1 = _train_l1 if REQUIRE_L1 is None else REQUIRE_L1
+print(f"Require L1: {REQUIRE_L1}")
+_train_sig = _train_man.get("tuples_subdir", "")
+if _args.sig_dir is None and _train_sig and "+" not in _train_sig and _train_man.get("model", "dqcd") == MODEL:
+    SIG_SUBDIR = TUPLES_SUBDIR = _train_sig
+    tuples_dir = TUPLES_BASE / SIG_SUBDIR
+print(f"Signal tuples: {SIG_SUBDIR}")
 TRAIN_MODEL_TAG = {"hahm": "HAHM", "both": f"Scenario{_train_scen}_HAHM"}.get(
     _train_man.get("model", "dqcd"), f"Scenario{_train_scen}")
 DISC_LABEL = {("bdt", False): "BDT", ("bdt", True): "pBDT", ("pnn", False): "NN", ("pnn", True): "PNN"}[
@@ -578,7 +589,7 @@ def _make_bdt_vars():
     return vars_
 
 BDT_VARIABLES = _make_bdt_vars()
-_LOAD_BRANCHES = list(dict.fromkeys(BDT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1", "wPU"]))
+_LOAD_BRANCHES = list(dict.fromkeys(BDT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1", "wPU", "nGenBplus", "tbweight"]))
 
 _READ_THREADS  = max(1, int(os.environ.get("WP_READ_THREADS", "4")))
 _READ_EXECUTOR = (ThreadPoolExecutor(max_workers=_READ_THREADS) if _READ_THREADS > 1 else None)
@@ -656,9 +667,24 @@ for fpath, key in sig_file_params:
 df_sig = pd.concat(sig_frames, ignore_index=True)
 del sig_frames, df
 
+MINBIAS_SUBDIR = _train_man.get('minbias_subdir', MINBIAS_SUBDIR)
+VETO_GEN_BPLUS = bool(_train_man.get('veto_gen_bplus', False))
+MINBIAS_WEIGHT_BRANCH = _train_man.get('minbias_weight_branch')
+minbias_dir = TUPLES_BASE / MINBIAS_SUBDIR
 df_bkg = apply_l1(read_flat(minbias_dir / MINBIAS_FILE), MINBIAS_FILE)
+if VETO_GEN_BPLUS:
+    if 'nGenBplus' not in df_bkg or not (df_bkg['nGenBplus'] >= 0).all():
+        raise SystemExit(f"model was trained with the gen B+- veto but {minbias_dir / MINBIAS_FILE} has no valid nGenBplus")
+    _n_before = len(df_bkg)
+    df_bkg = df_bkg[df_bkg['nGenBplus'] == 0].reset_index(drop=True)
+    print(f"Gen B+- veto: kept {len(df_bkg)} of {_n_before} MinBias events from {MINBIAS_SUBDIR}")
 df_bkg['label'] = 0
 df_bkg['xsec_weight'] = MINBIAS_XSEC / MINBIAS_NGEN_AFTERFILTER
+if MINBIAS_WEIGHT_BRANCH:
+    if MINBIAS_WEIGHT_BRANCH not in df_bkg:
+        raise SystemExit(f"model was trained with MinBias weight {MINBIAS_WEIGHT_BRANCH} but {minbias_dir / MINBIAS_FILE} lacks it")
+    df_bkg['xsec_weight'] = df_bkg['xsec_weight'] * df_bkg[MINBIAS_WEIGHT_BRANCH].astype(np.float64)
+    print(f"MinBias weight {MINBIAS_WEIGHT_BRANCH}: mean {df_bkg[MINBIAS_WEIGHT_BRANCH].mean():.3f}")
 
 add_dxy_lxy(df_sig)
 add_dxy_lxy(df_bkg)
@@ -841,6 +867,8 @@ if 'wPU' in df_global.columns:
 else:
     print("WARNING: no wPU branch in the tuples -- signal yields without PU weights")
     _WPU_A = np.ones(len(df_global), dtype=np.float64)
+_RELW_A = np.where(_LABEL_A == 0, df_global['xsec_weight'].fillna(0.0).to_numpy(dtype=np.float64)
+                   / (MINBIAS_XSEC / MINBIAS_NGEN_AFTERFILTER), 1.0)
 
 _lxy_ser = df_global['lxy_bin']
 if not isinstance(_lxy_ser.dtype, pd.CategoricalDtype):
@@ -984,7 +1012,7 @@ def _bkg_slices(key):
         if res is not None:
             _m = (_BKG_MASS >= lo) & (_BKG_MASS <= hi)
             rows, sc = rows[_m], sc[_m]
-        hit = (len(rows), _split_by_bin(rows, sc))
+        hit = (len(rows), _split_by_bin(rows, sc), _split_by_bin(rows, _RELW_A[rows]))
         _BKG_SLICES[ck] = hit
     return hit
 
@@ -1027,6 +1055,8 @@ for lxy_label, roc_t in _bin_roc_test.items():
     ax.set_ylabel('True Positive Rate')
     ax.legend(loc='lower right', fontsize=12 if len(curves) < 4 else 9, framealpha=0.9)
     ax.text(0.02, 0.97, "Preliminary", transform=ax.transAxes, fontsize=14, fontstyle="italic", fontweight="bold", va="top", ha="left")
+    _lxy_lo, _lxy_hi = (float(x) for x in lxy_label.replace("p", ".").split("to"))
+    ax.set_title(rf"{_lxy_lo:g} < $l_{{xy}}$ < {_lxy_hi:g} cm", loc="right", fontsize=13)
     ax.tick_params(direction="in", top=True, right=True, which="both")
     fig.savefig(_roc_lxy_dir / f'ROC_bylxy_{lxy_label}.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -1091,24 +1121,28 @@ def _counts_above_thr(scores, t):
 # TEST-set slice of reconstructed events (SIG_NGEN / MINBIAS_NGEN_AFTERFILTER
 # are generator-level totals over ALL events, train+test).
 def _bkg_b_at(t, key, lxy_label):
-    sc = _bkg_slices(key)[1].get(lxy_label)
+    _sl = _bkg_slices(key)
+    sc = _sl[1].get(lxy_label)
     if sc is None or len(sc) == 0:
         return 0.0, 0
     if BKG_TEST_FRAC <= 0.0:
         return 0.0, 0
     denom = MINBIAS_NGEN_AFTERFILTER * BKG_TEST_FRAC
     n = _counts_above_thr(sc, t)
-    return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (n / denom), n
+    nw = float(_sl[2][lxy_label][sc > t].sum())
+    return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (nw / denom), n
 
 def _bkg_total_in_window(key, lxy_label):
     """Total background yield (and raw MC count) in the mass window, BEFORE any BDT
     working-point cut -- same normalization as _bkg_b_at, just with no threshold applied."""
-    sc = _bkg_slices(key)[1].get(lxy_label)
+    _sl = _bkg_slices(key)
+    sc = _sl[1].get(lxy_label)
     if sc is None or len(sc) == 0 or BKG_TEST_FRAC <= 0.0:
         return 0.0, 0
     denom = MINBIAS_NGEN_AFTERFILTER * BKG_TEST_FRAC
     n = len(sc)
-    return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (n / denom), n
+    nw = float(_sl[2][lxy_label].sum())
+    return MINBIAS_XSEC * PB_TO_FB * LUMI_FB * (nw / denom), n
 
 def _sig_s_at(key, t, lxy_label):
     _sl = _sig_slices(key)
@@ -1797,6 +1831,9 @@ if _args.significance:
         "require_l1": bool(REQUIRE_L1),
         "resonance_veto": "background",
         "hit_preselection": bool(HIT_PRESELECTION),
+        "minbias_file": str(minbias_dir / MINBIAS_FILE),
+        "veto_gen_bplus": VETO_GEN_BPLUS,
+        "minbias_weight_branch": MINBIAS_WEIGHT_BRANCH,
         "mass_window_rel": MASS_WINDOW_REL if MASS_WINDOW_ACTIVE else None,
         "lxy_bins": {lb: [lxy_bins[i], lxy_bins[i + 1]] for i, lb in enumerate(lxy_labels)},
         "b_floor": _B_FLOOR,

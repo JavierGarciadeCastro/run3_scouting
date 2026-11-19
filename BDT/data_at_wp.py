@@ -4,6 +4,7 @@ import glob
 import json
 import multiprocessing as mp
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ import uproot
 
 _HERE = Path(__file__).resolve().parent
 BASE = Path("/ceph/cms/store/group/Run3Scouting")
-DATA_GLOB = str(BASE / "tuples_data" / "tuples_Data*_2024.root")
+DATA_GLOB = str(BASE / "tuples_data_svfix" / "tuples_Data*_2024.root")
 MINBIAS_FILE = str(BASE / "tuples_minbias" / "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root")
 RESONANCE_WINDOWS = [(0.41, 0.50), (0.51, 0.59), (0.731, 0.83), (0.96, 1.08), (2.91, 3.27), (3.47, 3.89),
                      (8.99, 9.91), (9.64, 10.56), (9.90, 10.78), (81.0, 101.0)]
@@ -22,6 +23,7 @@ LUMI_FB = 109.95
 UNBLIND_FRAC = 0.1
 ERA_LUMI_FB = {"C": 7.24, "D": 7.96, "E": 11.32, "H": 5.44, "I": 11.47}
 DATA_LUMI_FB = UNBLIND_FRAC * sum(ERA_LUMI_FB.values())
+ERA_STR = ",".join(ERA_LUMI_FB)
 MINBIAS_NGEN = 409318867
 MINBIAS_XSEC_PB = 1.051e7 * (MINBIAS_NGEN / 8.31e9)
 HIST_EDGES = np.arange(0.0, 120.0 + 1e-9, 0.002)
@@ -54,11 +56,22 @@ def load_eval(eval_dir):
     with open(eval_dir / "majority_vote_wp.json") as fh:
         wp = json.load(fh)
     thetas = sorted({tuple(v) for e in wp["mass_points"].values() for v in e.get("cond_theta", {}).values()})
-    return {"dir": eval_dir, "wp": wp, "model_dir": wp["model_dir"], "features": wp["features"],
+    theta_ranges = None
+    if wp["conditional"] and any(v.replace("param_", "") in ("mdimuon", "mzd", "mpi") for v in wp["cond_vars"]):
+        theta_ranges = {}
+        for e in wp["mass_points"].values():
+            mref = e.get("mA", e.get("mzd"))
+            lo, hi = e["mass_window"]
+            for v in {tuple(x) for x in e.get("cond_theta", {}).values()}:
+                theta_ranges.setdefault(v, []).append((lo - PLOT_RANGE_REL * mref, hi + PLOT_RANGE_REL * mref))
+    return {"theta_ranges": theta_ranges, "dir": eval_dir, "wp": wp, "model_dir": wp["model_dir"], "features": wp["features"],
             "cond_vars": wp["cond_vars"], "conditional": wp["conditional"],
             "thetas": thetas if wp["conditional"] else [None],
             "require_l1": wp["require_l1"],
             "hit_preselection": wp.get("hit_preselection", False),
+            "minbias_file": wp.get("minbias_file", MINBIAS_FILE),
+            "veto_gen_bplus": wp.get("veto_gen_bplus", False),
+            "minbias_weight_branch": wp.get("minbias_weight_branch"),
             "lxy_edges": [wp["lxy_bins"][LXY_ORDER[0]][0]] + [wp["lxy_bins"][lb][1] for lb in LXY_ORDER]}
 
 
@@ -83,6 +96,10 @@ def _branches(evals, available, is_mc):
                 want.add(f)
     if is_mc:
         want.add("evtn")
+        if any(ev["veto_gen_bplus"] for ev in evals):
+            want.add("nGenBplus")
+        if evals[0]["minbias_weight_branch"]:
+            want.add(evals[0]["minbias_weight_branch"])
     missing = sorted(b for b in want if b not in available)
     if missing:
         raise SystemExit(f"input is missing branches {missing[:10]}")
@@ -119,7 +136,7 @@ def score_chunk_task(task):
         for lb in LXY_ORDER:
             models[(i, lb)] = PNNClassifier.load(str(Path(ev["model_dir"]) / f"pnn_lxy_{lb}.pt"))
     is_mc = sample == "minbias"
-    out = {"hist": np.zeros((len(LXY_ORDER), len(HIST_EDGES) - 1), np.int64),
+    out = {"hist": np.zeros((len(LXY_ORDER), len(HIST_EDGES) - 1), np.float64),
            "n_all_veto": 0, "n_test_veto": 0, "kept": {}}
     with uproot.open(path) as f:
         t = f["tuples"]
@@ -136,6 +153,8 @@ def score_chunk_task(task):
                 lx = df["SV1_lxy"].to_numpy()
                 sel &= np.where(lx < 11.0, nh <= 0, np.where(lx < 16.0, nh <= 1, nh <= 2))
             if is_mc:
+                if evals[0]["veto_gen_bplus"]:
+                    sel &= df["nGenBplus"].to_numpy() == 0
                 out["n_all_veto"] += int(sel.sum())
                 sel &= (evtn % 10) >= 7
                 out["n_test_veto"] += int(sel.sum())
@@ -145,11 +164,13 @@ def score_chunk_task(task):
             df = df[sel].reset_index(drop=True)
             if not len(df):
                 continue
+            wb = evals[0]["minbias_weight_branch"]
+            wv = df[wb].to_numpy(dtype=np.float64) if (is_mc and wb) else None
             _add_dxy_lxy(df)
             b = np.digitize(df["SV1_lxy"].to_numpy(), edges[1:-1], right=True)
             m = df["SV1_mass"].to_numpy()
             for ib in range(len(LXY_ORDER)):
-                out["hist"][ib] += np.histogram(m[b == ib], HIST_EDGES)[0]
+                out["hist"][ib] += np.histogram(m[b == ib], HIST_EDGES, weights=None if wv is None else wv[b == ib])[0]
             for i, ev in enumerate(evals):
                 for theta in ev["thetas"]:
                     key = (i, scorer_key(ev, theta))
@@ -158,12 +179,18 @@ def score_chunk_task(task):
                             df[c] = np.float32(v)
                     X = df[ev["features"]].to_numpy(dtype=np.float32)
                     sc = np.full(len(df), -1.0, np.float32)
+                    in_rng = np.ones(len(df), bool)
+                    if ev["theta_ranges"] is not None:
+                        in_rng[:] = False
+                        for a_, b_ in ev["theta_ranges"].get(tuple(theta), []):
+                            in_rng |= (m >= a_) & (m <= b_)
                     for ib, lb in enumerate(LXY_ORDER):
-                        rows = np.flatnonzero(b == ib)
+                        rows = np.flatnonzero((b == ib) & in_rng)
                         if len(rows):
                             sc[rows] = models[(i, lb)].predict_proba(X[rows])[:, 1]
                     k = sc > keep_min
                     piece = {"mass": m[k], "lxy": df["SV1_lxy"].to_numpy()[k], "bin": b[k].astype(np.int8),
+                             **({"w": wv[k]} if wv is not None else {}),
                              "score": sc[k], "mu1_pt": df["SV1_mu1_pt"].to_numpy()[k],
                              "mu2_pt": df["SV1_mu2_pt"].to_numpy()[k]}
                     out["kept"].setdefault(key, []).append(piece)
@@ -175,7 +202,11 @@ def score_chunk_task(task):
 
 def run_scoring(evals, args, keep_min):
     files = [(p, "data") for p in sorted(glob.glob(args.data))]
-    files.append((MINBIAS_FILE, "minbias"))
+    eras = {m.group(1) for p, _ in files for m in [re.search(r"tuples_Data([A-Z])_", Path(p).name)] if m}
+    if not files or eras != set(ERA_LUMI_FB):
+        raise SystemExit(f"--data eras {sorted(eras)} != ERA_LUMI_FB eras {sorted(ERA_LUMI_FB)}: "
+                         "the data/MinBias normalisation would be wrong")
+    files.append((evals[0]["minbias_file"], "minbias"))
     tasks = []
     for path, sample in files:
         with uproot.open(path) as f:
@@ -229,18 +260,18 @@ def _intervals_minus(base, cuts):
     return segs
 
 
-def _count_in(m, segs):
+def _count_in(m, segs, w=None):
     k = np.zeros(len(m), bool)
     for a, b in segs:
         k |= (m >= a) & (m <= b)
-    return int(k.sum())
+    return int(k.sum()) if w is None else float(w[k].sum())
 
 
 def _hist_count(h, segs):
     c = 0
     centers = 0.5 * (HIST_EDGES[1:] + HIST_EDGES[:-1])
     for a, b in segs:
-        c += int(h[(centers >= a) & (centers <= b)].sum())
+        c += float(h[(centers >= a) & (centers <= b)].sum())
     return c
 
 
@@ -291,11 +322,17 @@ def analyse(ev, args):
             for sample in ("data",) + (("minbias",) if has_mb else ()):
                 p = (z[f"{sample}_{sk}_bin"] == ib) & (z[f"{sample}_{sk}_score"] > thr)
                 mp_ = z[f"{sample}_{sk}_mass"][p]
+                wk = f"{sample}_{sk}_w"
+                wp_ = z[wk][p] if wk in z.files else None
                 h = z[f"{sample}_hist"][ib]
-                n_bin = int(h.sum())
-                d = {"n_window_before_wp": _hist_count(h, win), "n_window_after_wp": _count_in(mp_, win),
-                     "n_bin_before_wp": n_bin, "n_bin_after_wp": int(len(mp_)),
-                     "pass_frac_bin": len(mp_) / n_bin if n_bin else None}
+                n_bin = float(h.sum())
+                n_after = float(wp_.sum()) if wp_ is not None else float(len(mp_))
+                d = {"n_window_before_wp": _hist_count(h, win), "n_window_after_wp": _count_in(mp_, win, wp_),
+                     "n_bin_before_wp": n_bin, "n_bin_after_wp": n_after,
+                     "pass_frac_bin": n_after / n_bin if n_bin else None}
+                if sample == "data" or wp_ is None:
+                    for kk in ("n_window_before_wp", "n_window_after_wp", "n_bin_before_wp", "n_bin_after_wp"):
+                        d[kk] = int(round(d[kk]))
                 if sample == "minbias":
                     d["weight_per_event_data_lumi"] = w10
                     d["n_window_before_wp_data_lumi"] = d["n_window_before_wp"] * w10
@@ -307,12 +344,12 @@ def analyse(ev, args):
             lines.append(f"{tag:<16} {lb:>11} {wp_col} | {dd['n_window_before_wp']:11,d} "
                          f"{dd['n_window_after_wp']:10d} | "
                          + (f"{mm['n_window_before_wp_data_lumi']:11,.0f} {mm['n_window_after_wp_data_lumi']:8.0f} "
-                            f"{mm['n_window_after_wp']:6d}" if mm else ""))
+                            f"{mm['n_window_after_wp']:6.0f}" if mm else ""))
         results[tag] = res
-    out = {"description": "Data (10% of 2024 C,D,E,H,I) and MinBias test set in each signal mass window and lxy "
+    out = {"description": f"Data (10% of 2024 {ERA_STR}) and MinBias test set in each signal mass window and lxy "
                           f"bin, before and after the majority-vote WP of {ev['dir']}. MinBias *_data_lumi = raw "
                           f"test-set counts x weight_per_event_data_lumi (eval normalisation scaled to the data "
-                          f"lumi, {DATA_LUMI_FB:.3f} fb^-1 = 10% of eras C,D,E,H,I, i.e. comparable to the data). "
+                          f"lumi, {DATA_LUMI_FB:.3f} fb^-1 = 10% of eras {ERA_STR}, i.e. comparable to the data). "
                           "pass_frac_bin = after/before over the whole lxy "
                           "bin (all masses).",
            "minbias_weight_per_test_event_full_lumi": mb_w, "mass_points": results}
@@ -373,7 +410,8 @@ def plot_mass_spectra(ev, z, out, w10, plot_dir):
             ymax = 1.0
             if has_mb:
                 p = (z[f"minbias_{sk}_bin"] == ib) & (z[f"minbias_{sk}_score"] > thr)
-                hm, _ = np.histogram(z[f"minbias_{sk}_mass"][p], edges)
+                hm, _ = np.histogram(z[f"minbias_{sk}_mass"][p], edges,
+                                     weights=z[f"minbias_{sk}_w"][p] if f"minbias_{sk}_w" in z.files else None)
                 ax.stairs(hm * w10, edges, fill=True, alpha=0.35, color="tab:blue",
                           label=f"MinBias (1 raw evt = {w10:.0f})")
                 ax.stairs(hm * w10, edges, color="tab:blue")
@@ -381,7 +419,7 @@ def plot_mass_spectra(ev, z, out, w10, plot_dir):
             p = (z[f"data_{sk}_bin"] == ib) & (z[f"data_{sk}_score"] > thr)
             hd, _ = np.histogram(z[f"data_{sk}_mass"][p], edges)
             nz = hd > 0
-            ax.errorbar(c[nz], hd[nz], yerr=np.sqrt(hd[nz]), fmt="o", color="black", ms=4, label=f"Data (10% of C,D,E,H,I, {DATA_LUMI_FB:.2f} fb$^{{-1}}$)")
+            ax.errorbar(c[nz], hd[nz], yerr=np.sqrt(hd[nz]), fmt="o", color="black", ms=4, label=f"Data (10% of {ERA_STR}, {DATA_LUMI_FB:.2f} fb$^{{-1}}$)")
             ymax = max(ymax, float(hd.max()) if len(hd) else 0.0)
             ax.set_ylim(0, ymax * 1.9 + 1)
             dd = r["data"]
@@ -437,7 +475,8 @@ def plot_mass_before_after(ev, z, out, w10, plot_dir):
                         h, _ = np.histogram(hc, edges, weights=z[f"{sample}_hist"][ib])
                     else:
                         p = (z[f"{sample}_{sk}_bin"] == ib) & (z[f"{sample}_{sk}_score"] > r["threshold"])
-                        h, _ = np.histogram(z[f"{sample}_{sk}_mass"][p], edges)
+                        h, _ = np.histogram(z[f"{sample}_{sk}_mass"][p], edges,
+                                            weights=z[f"{sample}_{sk}_w"][p] if f"{sample}_{sk}_w" in z.files else None)
                     hists[sample] = h.astype(float) * (w10 if sample == "minbias" else 1.0)
                 hd = hists["data"]
                 nz = hd > 0
@@ -491,11 +530,10 @@ def plot_full_spectrum(ev, z, out, w10, plot_dir):
     kept = {}
     for tag, res in out["mass_points"].items():
         e = wp["mass_points"][tag]
-        lo, hi = res["mass_window"]
         sk, _ = _point_scorer(ev, e)
         for s in samples:
             if (s, sk) not in kept:
-                kept[(s, sk)] = {c_: z[f"{s}_{sk}_{c_}"] for c_ in ("bin", "score", "mass")}
+                kept[(s, sk)] = {c_: z[f"{s}_{sk}_{c_}"] for c_ in ("bin", "score", "mass", "w") if f"{s}_{sk}_{c_}" in z.files}
         fig, axes = plt.subplots(2 * len(LXY_ORDER), 2, figsize=(14, 19), sharex=True,
                                  gridspec_kw={"height_ratios": [3, 1] * len(LXY_ORDER), "hspace": 0.1, "wspace": 0.16})
         for ib, lb in enumerate(LXY_ORDER):
@@ -514,7 +552,7 @@ def plot_full_spectrum(ev, z, out, w10, plot_dir):
                     else:
                         k = kept[(s, sk)]
                         p = (k["bin"] == ib) & (k["score"] > r["threshold"])
-                        h = np.histogram(k["mass"][p], edges)[0].astype(float)
+                        h = np.histogram(k["mass"][p], edges, weights=k["w"][p] if "w" in k else None)[0].astype(float)
                     hists[s] = h * (w10 if s == "minbias" else 1.0)
                 hd = hists["data"]
                 nz = hd > 0
@@ -530,9 +568,6 @@ def plot_full_spectrum(ev, z, out, w10, plot_dir):
                             label=f"Data: {hd.sum():,.0f}")
                 ax.set_yscale("log")
                 ax.set_ylim(0.5, max(max(h.max() for h in hists.values()), 1.0) * 3000)
-                for x_ in (ax, rx):
-                    for v in (lo, hi):
-                        x_.axvline(v, color="#d62728", lw=1.0, ls="--")
                 rx.axhline(1, color="gray", ls="--", lw=1)
                 rx.set_yscale("log")
                 rx.set_ylim(0.05, 100)
@@ -570,48 +605,66 @@ def plot_window_yields(ev, out, plot_dir):
     def _grp(t):
         return int(round(pts[t]["mpi"] / pts[t]["mA"])) if is_dqcd else None
 
-    groups = sorted({_grp(t) for t in tags})
-    styles = [("-", "o"), ("--", "s")]
-    series = [("MinBias before WP", "tab:blue", lambda r: r["minbias"]["n_window_before_wp_data_lumi"]),
-              ("Data before WP", "black", lambda r: r["data"]["n_window_before_wp"]),
-              ("Data after WP", "#d62728", lambda r: r["data"]["n_window_after_wp"])]
+    groups = sorted({_grp(t) for t in tags}, key=lambda g: (g is None, g))
+    group_style = {3: ("tab:blue", "s"), 10: ("#d62728", "D")}
+    before = [("MinBias before WP", "tab:green", lambda r: r["minbias"]["n_window_before_wp_data_lumi"]),
+              ("Data before WP", "black", lambda r: r["data"]["n_window_before_wp"])]
     floor = 0.5
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
-    for lb, ax in zip(LXY_ORDER, axes.flat):
-        for i, g in enumerate(groups):
-            ls, mk = styles[i % 2]
-            sel = sorted((t for t in tags if _grp(t) == g and lb in out["mass_points"][t]["bins"]), key=_x)
-            xs = np.array([_x(t) for t in sel])
-            for _, color, get in series:
-                ys = np.array([get(out["mass_points"][t]["bins"][lb]) for t in sel], dtype=float)
-                zero = ys <= 0
-                ax.plot(xs[~zero], ys[~zero], color=color, ls=ls, marker=mk, ms=5, lw=1.4)
-                ax.plot(xs[zero], np.full(zero.sum(), floor), color=color, ls="none", marker="v", ms=7, mfc="none")
-        ax.set_title(rf"$l_{{xy}}$ {lb.replace('p', '.').replace('to', '–')} cm", loc="left", fontsize=13)
+    head = "" if WP_MODE == "tight" else f", loose WP ({ev['wp']['loose_sig_eff']:.0%} sig. eff.)"
+    d = plot_dir / "window_yields"
+    d.mkdir(parents=True, exist_ok=True)
+    for lb in LXY_ORDER + ["all"]:
+        lbs = LXY_ORDER if lb == "all" else [lb]
+        sel = sorted((t for t in tags if any(b in out["mass_points"][t]["bins"] for b in lbs)), key=_x)
+        if not sel:
+            continue
+
+        def _sum(t, get):
+            bins = out["mass_points"][t]["bins"]
+            return sum(get(bins[b]) for b in lbs if b in bins)
+
+        def _draw(xs, ys, color, ls, mk, filled):
+            xs, ys = np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+            zero = ys <= 0
+            ax.plot(xs[~zero], ys[~zero], color=color, ls=ls, marker=mk, ms=7, lw=1.8, mfc=color if filled else "white")
+            ax.plot(xs[zero], np.full(zero.sum(), floor), color=color, ls="none", marker="v", ms=8, mfc="none")
+
+        fig, ax = plt.subplots(figsize=(9, 7))
+        handles = []
+        unique = {}
+        for t in sel:
+            unique.setdefault(round(_x(t), 4), t)
+        for lab, color, get in before:
+            _draw(list(unique), [_sum(t, get) for t in unique.values()], color, "-", "o", True)
+            handles.append(Line2D([], [], color=color, ls="-", lw=2, marker="o", ms=6, label=lab))
+        for g in groups:
+            gcolor, mk = group_style.get(g, ("tab:blue", "s"))
+            gsel = [t for t in sel if _grp(t) == g]
+            _draw([_x(t) for t in gsel], [_sum(t, lambda r: r["data"]["n_window_after_wp"]) for t in gsel],
+                  gcolor, "--", mk, False)
+            lab = "Data after WP" + (rf", $m_{{A'}}/m_{{\pi_3}} = 1/{g}$" if is_dqcd else "")
+            handles.append(Line2D([], [], color=gcolor, ls="--", lw=2, marker=mk, ms=6, mfc="white", label=lab))
+        handles.append(Line2D([], [], color="gray", ls="none", marker="v", mfc="none", ms=8, label="0 events"))
+        xs = np.array([_x(t) for t in sel])
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_ylim(floor / 2, None)
-        ax.set_ylabel(f"Events in mass window ({DATA_LUMI_FB:.2f} fb$^{{-1}}$)")
-        ax.grid(alpha=0.3, which="both")
-        ax.tick_params(direction="in", top=True, right=True, which="both")
-    handles = [Line2D([], [], color=color, lw=2, label=lab) for lab, color, _ in series]
-    if is_dqcd:
-        handles += [Line2D([], [], color="gray", ls=styles[i % 2][0], marker=styles[i % 2][1],
-                           label=rf"$m_{{A'}}/m_{{\pi_3}} = 1/{g}$") for i, g in enumerate(groups)]
-    handles.append(Line2D([], [], color="gray", ls="none", marker="v", mfc="none", ms=7, label="0 events"))
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.96), fontsize=11, ncol=len(handles),
-               frameon=False)
-    for ax in axes[-1]:
+        ax.set_ylabel(f"Events in mass window ({DATA_LUMI_FB:.2f} fb$^{{-1}}$)", fontsize=12)
+        ax.tick_params(direction="in", top=True, right=True, which="both", labelsize=11)
         if is_dqcd:
-            ax.set_xticks([0.3, 0.5, 1, 2, 3])
-            ax.set_xticklabels(["0.3", "0.5", "1", "2", "3"])
+            xlo, xhi = xs.min() / 1.12, xs.max() * 1.12
+            ticks = [v for v in (0.2, 0.3, 0.5, 1, 2, 3, 5, 10) if xlo <= v <= xhi]
+            ax.set_xticks(ticks)
+            ax.set_xticklabels([f"{v:g}" for v in ticks])
             ax.xaxis.set_minor_formatter(NullFormatter())
-        ax.set_xlabel(r"$m_{A'}$ [GeV]" if is_dqcd else r"$m_{Z_d}$ [GeV]")
-    head = "majority-vote WP" if WP_MODE == "tight" else f"loose WP ({ev['wp']['loose_sig_eff']:.0%} sig. eff.)"
-    fig.suptitle(f"{_disc_label(ev)}, {head}: events in each signal mass window, resonance windows removed", fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
-    fig.savefig(plot_dir / "window_yields.png", dpi=130)
-    plt.close(fig)
+            ax.set_xlim(xlo, xhi)
+        ax.set_xlabel(r"$m_{A'}$ [GeV]" if is_dqcd else r"$m_{Z_d}$ [GeV]", fontsize=12)
+        rng = "all $l_{xy}$ bins" if lb == "all" else rf"$l_{{xy}}$ {lb.replace('p', '.').replace('to', '–')} cm"
+        ax.set_title(f"{_disc_label(ev)}{head}, {rng}", loc="left", fontsize=13)
+        ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.11), fontsize=10, ncol=3, frameon=False)
+        fig.savefig(d / ("window_yields_all_lxy.png" if lb == "all" else f"window_yields_lxy_{lb}.png"), dpi=130,
+                    bbox_inches="tight")
+        plt.close(fig)
 
 
 def plot_pass_fraction(ev, out, plot_dir):
@@ -692,11 +745,12 @@ def main():
 
     evals = [load_eval(d) for d in args.eval_dirs]
     for ev in evals[1:]:
-        for k in ("require_l1", "hit_preselection", "lxy_edges"):
+        for k in ("require_l1", "hit_preselection", "lxy_edges", "minbias_file", "veto_gen_bplus"):
             if ev[k] != evals[0][k]:
                 raise SystemExit(f"eval dirs disagree on {k}; run them separately")
     if WP_MODE == "tight":
-        keep_min = KEEP_MIN_TIGHT
+        keep_min = min(KEEP_MIN_TIGHT, min(_point_threshold(be)[0] for ev in evals
+                       for e in ev["wp"]["mass_points"].values() for be in e["bins"].values()) - 1e-4)
     else:
         thrs = []
         for ev in evals:

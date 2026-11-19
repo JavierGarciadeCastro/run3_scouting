@@ -35,8 +35,10 @@ FILTER_EFF_TABLE = _REPO / "data" / "DQCD-request.csv"
 SYST_VARIANTS = ("trg_up", "trg_down", "sel_up", "sel_down")
 
 SIG_DIR = Path("/ceph/cms/store/group/Run3Scouting/tuples_DQCD_ScenarioA")
-ERA_LUMI_FB = {"C": 7.24, "D": 7.96, "E": 11.32, "H": 5.44, "I": 11.47}
+from data_at_wp import ERA_LUMI_FB
 LUMI_FB = round(sum(ERA_LUMI_FB.values()), 2)
+
+EXACT_MASS = {0.33: 0.333, 0.67: 0.667, 1.33: 1.333, 1.67: 1.667, 3.33: 3.333}
 
 _CACHE_RE = re.compile(r"Scenario(\w+?)_2024_mpi-([0-9p]+)_mA-([0-9p]+)_ctau-([0-9p]+)mm")
 _CSV_RE = re.compile(r"Scenario(\w+?)_Mpi-([0-9p]+)_MA-([0-9p]+)_ctau-([0-9p]+)mm")
@@ -163,6 +165,9 @@ def _p2f(s):
 
 def _f2p(v):
     return ("%g" % v).replace(".", "p")
+
+def _exact(v):
+    return EXACT_MASS.get(round(v, 2), v)
 
 def _same(a, b, tol=1e-3):
     return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
@@ -291,16 +296,16 @@ def _event_roow(is_signal, ev, lw):
         "sel_down": base * sf_trg * sf_sel_dn,
     }
 
-def _f2p2(v):
-    return ("%.2f" % v).replace(".", "p")
+def _f2p3(v):
+    return ("%.3f" % v).replace(".", "p")
 
 def dataset_name(label, wp_tag="WPTight", scenario="A", mass_point=None, mass_range=None):
     name = "Dimuon_lxy%s_%s" % (label, wp_tag)
     if mass_point:
         mpi, mA = mass_point
-        name += "_Scenario%s_mPi_%s_mratio_%s" % (scenario, _f2p2(mpi), _f2p2(mA / mpi))
+        name += "_Scenario%s_mPi_%s_mratio_%s" % (scenario, _f2p3(mpi), _f2p3(_exact(round(mA / mpi, 2))))
     if mass_range:
-        name += "_%s_%s" % (_f2p2(mass_range[0]), _f2p2(mass_range[1]))
+        name += "_%s_%s" % (_f2p3(mass_range[0]), _f2p3(mass_range[1]))
     return name
 
 def write_fit_datasets(df, bins, out_path, is_signal, lw, wp_tag="WPTight", mass_range=None, mass_point=None):
@@ -362,6 +367,12 @@ def write_fit_datasets(df, bins, out_path, is_signal, lw, wp_tag="WPTight", mass
     fout.Close()
     print("[fit] wrote -> %s" % out_path)
 
+def _model_sig_dir(model_dir):
+    mans = sorted(Path(model_dir).glob("*_manifest.json"))
+    sub = json.load(open(mans[0])).get("tuples_subdir") if mans else None
+    return SIG_DIR.parent / sub if sub and "+" not in sub else SIG_DIR
+
+
 def _signal_files():
     out = []
     for f in sorted(SIG_DIR.glob("*.root")):
@@ -397,17 +408,22 @@ def run_all_points(eval_dir, stage, wp_name):
     ev = Path(eval_dir).resolve()
     wp = json.load(open(ev / "majority_vote_wp.json"))
     model = wp["model_dir"]
-    short = "_".join(ev.parent.name.split("_")[:2])
+    short = ev.parent.name
     root = _REPO / "fitInputs" / "2024_pnn"
     base = root / f"{short}_WP_tight"
     out = root / f"{short}_WP_{wp_name}"
     data_dir = ev / ("data_at_wp" if wp_name == "tight" else "data_at_wp_loose") / "scored"
+    global SIG_DIR
+    SIG_DIR = _model_sig_dir(model)
+    if stage == "score":
+        print(f"signal tuples: {SIG_DIR}")
     files = _signal_files() if stage == "score" else None
 
     jobs = []
     for tag, e in sorted(wp["mass_points"].items()):
         mpi, mA = float(e["mpi"]), float(e["mA"])
-        names = {"mass_range": [_g(x) for x in e["mass_window"]], "mass_point": [_g(mpi), _g(mA)]}
+        mpi_exact, mA_exact = _exact(mpi), _exact(mA)
+        names = {"mass_range": [_g(x * mA_exact / mA) for x in e["mass_window"]], "mass_point": [_g(mpi_exact), _g(mA_exact)]}
         ctaus = sorted(float(c) for c in e.get("cond_theta", {}) or e["bins"][next(iter(e["bins"]))]["threshold_by_ctau"])
         pdir = out / tag
         sdir = base / tag / "scored"
@@ -416,7 +432,7 @@ def run_all_points(eval_dir, stage, wp_name):
         if stage == "write":
             with open(pdir / "ScenarioA_2024_points.txt", "w") as fh:
                 for c in ctaus:
-                    fh.write(f"{mpi:g} {mA:g} {c:g}\n")
+                    fh.write(f"{mpi_exact:g} {mA_exact:g} {c:g}\n")
             data = data_dir / f"scored_Data2024_{tag}.root"
             if not data.is_file():
                 raise SystemExit(f"missing {data}: run data_at_wp.py {ev} --wp {wp_name} --write-scored first")
@@ -448,7 +464,7 @@ def run_all_points(eval_dir, stage, wp_name):
 
 def write_datasets(model, scored, fit_dir, wp_name, mass_range, mass_point, point=None, eval_wp=None):
     is_signal = point is not None
-    tag = sample_tag(SCENARIO, *point) if is_signal else "Data" + YEAR
+    tag = sample_tag(SCENARIO, *mass_point, point[2]) if is_signal else "Data" + YEAR
     fit_path = fit_filename(fit_dir, tag)
     Path(fit_dir).mkdir(parents=True, exist_ok=True)
 

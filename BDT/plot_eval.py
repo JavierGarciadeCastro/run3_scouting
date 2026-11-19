@@ -76,7 +76,7 @@ def make_plots(eval_dir, sub="signal_efficiency"):
         def _grp(r):
             return None
     else:
-        xkey, xlabel = "mpi", r"$m_{\pi_3}$ [GeV]"
+        xkey, xlabel = "mA", r"$m_{A'}$ [GeV]"
         dens = sorted({int(round(r["mpi"] / r["mA"])) for r in rows})
         groups = [(d, rf"$m_{{A'}}/m_{{\pi_3}} = 1/{d}$") for d in dens]
         def _grp(r):
@@ -208,11 +208,14 @@ def _sr_plots(rows, groups, _grp, xkey, xlabel, bin_order, lxy_bins, wp_txt, js,
     markers = ["o", "s"]
     lumi_txt = f"{lumi:g} fb$^{{-1}}$" if lumi else ""
 
-    def _panels(ylabel, getter, fname, annotate=None, floor_y=None, title=""):
+    def _panels(ylabel, getter, fname, annotate=None, floor_y=None, title="", merged=False):
         fig, axes = plt.subplots(2, 2, figsize=(14, 10), sharex=True)
         for lb, ax in zip(bin_order, axes.flat):
-            for i, (g, lab) in enumerate(groups):
-                sel = sorted((v for (k, b), v in tab.items() if b == lb and _grp(v["r"]) == g), key=lambda v: v["x"])
+            for i, (g, lab) in enumerate([(None, "MinBias")] if merged else groups):
+                sel = sorted((v for (k, b), v in tab.items() if b == lb and (merged or _grp(v["r"]) == g)),
+                             key=lambda v: v["x"])
+                if merged:
+                    sel = list({round(v["x"], 4): v for v in sel}.values())
                 if not sel:
                     continue
                 xs = np.array([v["x"] for v in sel])
@@ -252,7 +255,8 @@ def _sr_plots(rows, groups, _grp, xkey, xlabel, bin_order, lxy_bins, wp_txt, js,
             annotate=lambda v: f"{v['bkg_raw']} raw", floor_y=floor,
             title=f"MinBias background in mass window and lxy bin after the WP, {lumi_txt} (labels: raw MC events)")
     _panels(f"Expected background in window ({lumi_txt})", lambda v: v["bkg_yield_before_wp"],
-            "sr_bkg_yield_before_wp.png", title=f"MinBias background in mass window and lxy bin before the WP, {lumi_txt}")
+            "sr_bkg_yield_before_wp.png", title=f"MinBias background in mass window and lxy bin before the WP, {lumi_txt}",
+            merged=True)
 
 
 def read_limits(path):

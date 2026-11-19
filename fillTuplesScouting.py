@@ -1484,9 +1484,9 @@ for e in range(firste,laste):
 
         #
         # Branch filling
-        if branches["SV1_x"][-1] < 0.:
+        if branches["SV1_mass"][-1] < 0.:
             _sv_slot = "SV1"
-        elif branches["SV2_x"][-1] < 0.:
+        elif branches["SV2_mass"][-1] < 0.:
             _sv_slot = "SV2"
         else:
             break
@@ -1892,11 +1892,11 @@ for e in range(firste,laste):
 
         #
         # Branch filling
-        if branches["SV1_x"][-1] < 0.:
+        if branches["SV1_x"][-1] == -1.:
             branches["SV1_x"][-1]    =  t.SV_x[osvidx_noVtx[vn]]
             branches["SV1_y"][-1]    =  t.SV_y[osvidx_noVtx[vn]]
             branches["SV1_z"][-1]    =  t.SV_z[osvidx_noVtx[vn]]
-        elif branches["SV2_x"][-1] < 0.:
+        elif branches["SV2_x"][-1] == -1.:
             branches["SV2_x"][-1]    =  t.SV_x[osvidx_noVtx[vn]]
             branches["SV2_y"][-1]    =  t.SV_y[osvidx_noVtx[vn]]
             branches["SV2_z"][-1]    =  t.SV_z[osvidx_noVtx[vn]]

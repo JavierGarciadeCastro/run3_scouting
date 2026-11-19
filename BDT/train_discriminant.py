@@ -61,7 +61,7 @@ except ImportError:
 HERE        = Path(__file__).resolve().parent
 TUPLES_BASE = Path("/ceph/cms/store/group/Run3Scouting")
 
-MINBIAS_SUBDIR             = "tuples_minbias"
+MINBIAS_SUBDIR             = "tuples_minbias_svfix"
 MINBIAS_FILE               = "tuples_MinBias_Fil-DoubleMuOS43_2024_2024.root"
 MINBIAS_NGEN_BEFOREFILTER  = 8.31e9
 MINBIAS_NGEN_AFTERFILTER   = 409318867
@@ -119,7 +119,7 @@ def make_input_variables():
 
 INPUT_VARIABLES = make_input_variables()
 # Branches read from the tuples: the inputs plus what is needed for selection and binning
-BRANCHES_TO_READ = list(dict.fromkeys(INPUT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1", "evtn"]))
+BRANCHES_TO_READ = list(dict.fromkeys(INPUT_VARIABLES + ["SV1_lxy", "SV1_mass", "SV2_mass", "passL1", "evtn", "nGenBplus", "tbweight"]))
 
 # Plot style (same as workingpoint.py)
 hep.style.use("CMS")
@@ -179,14 +179,14 @@ def parse_args():
     parser.add_argument("--scenario", choices=["A", "B1", "B2", "C"], default="A",
                         help="DQCD signal scenario to train on.")
     parser.add_argument("--sig-dir", default=None,
-                        help="Subdirectory of the signal tuples. Default: tuples_DQCD_Scenario<S> for dqcd, "
-                             "tuples_hahm for hahm.")
+                        help="Subdirectory of the signal tuples. Default: tuples_DQCD_Scenario<S>_svfix for dqcd, "
+                             "tuples_hahm_svfix for hahm.")
     parser.add_argument("--mass-point", default=None, metavar="mpi:mA | mzd",
                         help="Train only on this signal mass point (all its ctau values), e.g. 4:1.33 (dqcd) or 5 (hahm).")
     parser.add_argument("--holdout", nargs="+", default=[], metavar="mpi:mA[:ctau] | mzd[:ctau]",
                         help="Signal point(s) excluded from training (they go to the test set only).")
-    parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=False,
-                        help="Keep only events with passL1 != 0.")
+    parser.add_argument("--require-l1", action=argparse.BooleanOptionalAction, default=True,
+                        help="Keep only events with passL1 != 0 (default). --no-require-l1 adds _noL1 to the model folder.")
     parser.add_argument("--hit-preselection", action=argparse.BooleanOptionalAction, default=True,
                         help="Preselection on N_excess = SV1_mu1_nhitsbeforesv + SV1_mu2_nhitsbeforesv, signal and "
                              "background: 0 for lxy < 11 cm, <= 1 for 11-16 cm, <= 2 above 16 cm. Saved in the "
@@ -208,6 +208,13 @@ def parse_args():
                         help="Cap on the training background events of the prompt lxy bin (fixed-seed random "
                              "subset, kept events reweighted to preserve the bin's total background weight). "
                              "All signal and all other bins are used. 0 = no cap.")
+    parser.add_argument("--minbias-dir", default=MINBIAS_SUBDIR,
+                        help=f"MinBias tuple dir under {TUPLES_BASE} (default: {MINBIAS_SUBDIR}).")
+    parser.add_argument("--veto-gen-bplus", action=argparse.BooleanOptionalAction, default=False,
+                        help="Drop MinBias events with a generated B+- (nGenBplus > 0); needs tuples with nGenBplus.")
+    parser.add_argument("--minbias-weight-branch", default="tbweight", metavar="BRANCH",
+                        help="Multiply the MinBias event weights by this per-event branch (default: tbweight, the "
+                             "B+- lifetime reweighting). Pass '' for unweighted MinBias.")
 
     # --- output ---
     parser.add_argument("--out-name", default=None,
@@ -262,6 +269,9 @@ class Config:
     out_dir: Path
     pnn: PNNHyperparameters
     device: str
+    minbias_dir: Path
+    veto_gen_bplus: bool
+    minbias_weight_branch: str | None = None
 
 
 def build_config(args):
@@ -270,13 +280,13 @@ def build_config(args):
     if args.signal == "both" and args.conditional and not set(cond_vars) <= {"mdimuon", "ctau"}:
         raise SystemExit("--signal both only supports --cond-var mdimuon and/or ctau (the other parameters exist for one model only)")
     n_mass        = len(MASS_PARAMS[args.signal]) if args.signal != "both" else None
-    default_dirs  = {"dqcd": f"tuples_DQCD_Scenario{args.scenario}", "hahm": "tuples_hahm"}
+    default_dirs  = {"dqcd": f"tuples_DQCD_Scenario{args.scenario}_svfix", "hahm": "tuples_hahm_svfix"}
     signal_dirs   = {m: TUPLES_BASE / (args.sig_dir if args.signal != "both" and args.sig_dir else default_dirs[m])
                      for m in signal_models}
     signal_tag    = {"dqcd": f"Scenario{args.scenario}", "hahm": "HAHM", "both": f"Scenario{args.scenario}_HAHM"}[args.signal]
     model_tag   = "_PNN" if args.model == "pnn" else ""   # BDT keeps the workingpoint.py directory
     cond_tag    = "_cond" + "".join(COND_TAG[v] for v in cond_vars) if args.conditional else ""
-    l1_tag      = "_L1req" if args.require_l1 else ""
+    l1_tag      = "" if args.require_l1 else "_noL1"
     holdout_tag = ("_holdout-" + "-".join(s.replace(":", "-").replace(".", "p") for s in args.holdout)
                    if args.holdout else "")
 
@@ -310,6 +320,9 @@ def build_config(args):
                          + l1_tag + holdout_tag + (f"_{args.out_name}" if args.out_name else ""))),
         pnn=pnn,
         device=args.device,
+        minbias_dir=TUPLES_BASE / args.minbias_dir,
+        veto_gen_bplus=args.veto_gen_bplus,
+        minbias_weight_branch=args.minbias_weight_branch,
     )
 
 
@@ -438,9 +451,23 @@ def load_signal(cfg, signal_files):
 
 
 def load_background(cfg):
-    df = read_tuple(TUPLES_BASE / MINBIAS_SUBDIR / MINBIAS_FILE, cfg)
+    df = read_tuple(cfg.minbias_dir / MINBIAS_FILE, cfg)
+    if cfg.veto_gen_bplus:
+        if "nGenBplus" not in df or not (df["nGenBplus"] >= 0).all():
+            raise SystemExit(f"--veto-gen-bplus: {cfg.minbias_dir / MINBIAS_FILE} has no valid nGenBplus branch")
+        n_before = len(df)
+        df = df[df["nGenBplus"] == 0].reset_index(drop=True)
+        print(f"Gen B+- veto: kept {len(df)} of {n_before} MinBias events ({len(df) / max(n_before, 1):.1%})")
     df["label"]       = 0
     df["xsec_weight"] = MINBIAS_XSEC / MINBIAS_NGEN_AFTERFILTER
+    if cfg.minbias_weight_branch:
+        wb = cfg.minbias_weight_branch
+        if wb not in df:
+            raise SystemExit(f"--minbias-weight-branch: {cfg.minbias_dir / MINBIAS_FILE} has no {wb} branch")
+        w = df[wb].to_numpy(dtype=np.float64)
+        print(f"MinBias weight {wb}: mean {w.mean():.3f}, max {w.max():.1f}, sum/N {w.sum() / len(w):.3f}, "
+              f"effective N {w.sum() ** 2 / (w ** 2).sum():.0f} of {len(w)}")
+        df["xsec_weight"] = df["xsec_weight"] * w
     return df
 
 
@@ -902,6 +929,9 @@ def write_manifest(path, model_file, lxy_label, features, importance, cfg, signa
         "resonance_veto":     "background",
         "hit_preselection":   cfg.hit_preselection,
         "tuples_subdir":      "+".join(d.name for d in cfg.signal_dirs.values()),
+        "minbias_subdir":     cfg.minbias_dir.name,
+        "veto_gen_bplus":     cfg.veto_gen_bplus,
+        "minbias_weight_branch": cfg.minbias_weight_branch,
         "lxy_bin":            lxy_label,
         "lxy_range_cm":       [LXY_BINS[i], LXY_BINS[i + 1]],
         **({"signal_mA":      sorted({p[1] for _, p, m in signal_files if m == "dqcd"}),
