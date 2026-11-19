@@ -43,7 +43,7 @@ float sfSVsel = (relaxedSVSel) ? 5.0 : 1.0;
 float maxDXYerr=0.05*sfSVsel, maxD3Derr=0.10*sfSVsel; // for identification of overlapping SVs
 
 // Trigger selection
-bool applyL1 = false;   // set false to skip the L1 requirement
+bool applyL1 = true;    // always require passL1 (unprescaled L1 seeds) in data and MC
 bool requireAtLeastOneSV = true;
 
 // BToPhi specific

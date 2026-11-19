@@ -79,6 +79,11 @@ void TriggerMaker::produce(edm::Event& iEvent, const edm::EventSetup& iSetup){
   }
 
   if (doL1_){
+    // L1TGlobalUtil silently returns all-false decisions if the AlgBlk is missing: fail loudly instead
+    edm::Handle<BXVector<GlobalAlgBlk>> algBlkH;
+    iEvent.getByToken(algToken_, algBlkH);
+    if (!algBlkH.isValid())
+      throw cms::Exception("TriggerMaker::produce: GlobalAlgBlk product not found (check AlgInputTag / process name)");
     l1GtUtils_->retrieveL1(iEvent, iSetup, algToken_);
 
 

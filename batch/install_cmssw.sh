@@ -24,6 +24,10 @@ then
     then
     release=CMSSW_15_0_2
     fi
+    if [ ${1} == "2024private" ]
+    then
+    release=CMSSW_14_0_21
+    fi
     if [ ${1} == "2025" ]
     then
     release=CMSSW_15_0_15_patch1
