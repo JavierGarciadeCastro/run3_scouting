@@ -342,8 +342,8 @@ if '2025' in opts.era:
         process.triggerMaker.l1tAlgBlkInputTag = cms.InputTag("gtStage2Digis")
         process.triggerMaker.l1tExtBlkInputTag = cms.InputTag("gtStage2Digis")
 
-# Private RAW/HLT MC has no RECO step: read the L1 uGT bits unpacked here (process SLIM) from hltFEDSelectorL1
-if not opts.data and not opts.isMiniAOD:
+# Data and private RAW/HLT MC have no RECO step: read the L1 uGT bits unpacked here (process SLIM) from hltFEDSelectorL1
+if opts.data or not opts.isMiniAOD:
     process.triggerMaker.AlgInputTag       = cms.InputTag("gtStage2Digis")
     process.triggerMaker.l1tAlgBlkInputTag = cms.InputTag("gtStage2Digis")
     process.triggerMaker.l1tExtBlkInputTag = cms.InputTag("gtStage2Digis")
@@ -378,29 +378,30 @@ else:
 
 process.beamSpotMaker = cms.EDProducer("BeamSpotMaker")
 
-if '2024' in opts.era:
-    process.emuHLTNoVtx2024 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
-            muons      = cms.InputTag("hltScoutingMuonPackerNoVtx"),
-            MinN       = cms.int32(2),
-            MaxEta     = cms.double(2.5),
-            MinPt      = cms.double(3.0),
-            outputName = cms.string("DoubleMuonv5"),
-            )
-if '2025' in opts.era:
-    process.emuHLTNoVtx2025 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
-            muons      = cms.InputTag("hltScoutingMuonPackerNoVtx"),
-            MinN       = cms.int32(2),
-            MaxEta     = cms.double(2.5),
-            MinPt      = cms.double(0.0),
-            outputName = cms.string("DoubleMuonNoVtxv4"),
-            )
-    process.emuHLTVtx2025 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
-            muons      = cms.InputTag("hltScoutingMuonPackerVtx"),
-            MinN       = cms.int32(2),
-            MaxEta     = cms.double(2.5),
-            MinPt      = cms.double(0.0),
-            outputName = cms.string("DoubleMuonVtxv4"),
-            )
+# DISABLED: ScoutingMuonL3PreFilterEmulator plugin not committed upstream yet (re-enable here and in the paths below once it exists)
+#if '2024' in opts.era:
+#    process.emuHLTNoVtx2024 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
+#            muons      = cms.InputTag("hltScoutingMuonPackerNoVtx"),
+#            MinN       = cms.int32(2),
+#            MaxEta     = cms.double(2.5),
+#            MinPt      = cms.double(3.0),
+#            outputName = cms.string("DoubleMuonv5"),
+#            )
+#if '2025' in opts.era:
+#    process.emuHLTNoVtx2025 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
+#            muons      = cms.InputTag("hltScoutingMuonPackerNoVtx"),
+#            MinN       = cms.int32(2),
+#            MaxEta     = cms.double(2.5),
+#            MinPt      = cms.double(0.0),
+#            outputName = cms.string("DoubleMuonNoVtxv4"),
+#            )
+#    process.emuHLTVtx2025 = cms.EDProducer("ScoutingMuonL3PreFilterEmulator",
+#            muons      = cms.InputTag("hltScoutingMuonPackerVtx"),
+#            MinN       = cms.int32(2),
+#            MaxEta     = cms.double(2.5),
+#            MinPt      = cms.double(0.0),
+#            outputName = cms.string("DoubleMuonVtxv4"),
+#            )
 
 from RecoTracker.MeasurementDet.measurementTrackerEventDefault_cfi import measurementTrackerEventDefault as _measurementTrackerEventDefault
 process.MeasurementTrackerEvent = _measurementTrackerEventDefault.clone()
@@ -421,18 +422,18 @@ process.offlineBeamSpot = cms.EDProducer("BeamSpotProducer")
 if '2024' in opts.era or '2025' in opts.era:
     if '2024' in opts.era:
         if do_skim:
-            process.skimpath_vtx   = cms.Path(process.countmuVtx+process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2024)
-            process.skimpath_novtx = cms.Path(process.countmuNoVtx+process.gtStage2Digis+process.countvtxNoVtx+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2024)
+            process.skimpath_vtx   = cms.Path(process.countmuVtx+process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2024 (disabled)
+            process.skimpath_novtx = cms.Path(process.countmuNoVtx+process.gtStage2Digis+process.countvtxNoVtx+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2024 (disabled)
             process.out.SelectEvents = cms.untracked.PSet(SelectEvents = cms.vstring('skimpath_vtx', 'skimpath_novtx'))
         else: 
-            process.skimpath = cms.Path(process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2024)
+            process.skimpath = cms.Path(process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2024 (disabled)
     if '2025' in opts.era:
         if do_skim:
-            process.skimpath_vtx   = cms.Path(process.countmuVtx+process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2025+process.emuHLTVtx2025)
-            process.skimpath_novtx = cms.Path(process.countmuNoVtx+process.gtStage2Digis+process.countvtxNoVtx+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2025+process.emuHLTVtx2025)
+            process.skimpath_vtx   = cms.Path(process.countmuVtx+process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2025+process.emuHLTVtx2025 (disabled)
+            process.skimpath_novtx = cms.Path(process.countmuNoVtx+process.gtStage2Digis+process.countvtxNoVtx+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2025+process.emuHLTVtx2025 (disabled)
             process.out.SelectEvents = cms.untracked.PSet(SelectEvents = cms.vstring('skimpath_vtx', 'skimpath_novtx'))
         else: 
-            process.skimpath = cms.Path(process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx+process.emuHLTNoVtx2025+process.emuHLTVtx2025)
+            process.skimpath = cms.Path(process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.vertexMakerVtx+process.hitMakerVtx+process.hitMakerNoVtx)  # +process.emuHLTNoVtx2025+process.emuHLTVtx2025 (disabled)
 else:
     if do_skim:
         process.skimpath = cms.Path(process.countmu+process.countvtx+process.gtStage2Digis+process.triggerMaker+process.offlineBeamSpot+process.beamSpotMaker+process.MeasurementTrackerEvent+process.hitMaker)

@@ -392,12 +392,15 @@ if (len(sys.argv)>2):
                 crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
     elif "DQCD_sig_private" in sys.argv[2]:
         # Private ScenarioA signals produced by garciaja, published to phys03/USER
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private'
+        # Private RAW/HLT samples must be skimmed in CMSSW_14_0_21 (cmsenv in batch/CMSSW_14_0_21)
+        if os.path.basename(os.path.normpath(base)) != "CMSSW_14_0_21":
+            sys.exit("ERROR: DQCD_sig_private must be submitted from CMSSW_14_0_21, but CMSSW_BASE is " + base)
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private_L1fix_CMSSW14'
         config.Data.inputDBS = 'phys03'
         config.Data.splitting = 'FileBased'
         config.Data.unitsPerJob = int(10)
         config.Data.publication = True
-        config.Data.outputDatasetTag = "private-Skim_final_{era}-v2".format(era=era)
+        config.Data.outputDatasetTag = "private-Skim_final_{era}-v4".format(era=era)
         inputfile = 'data/datasets_dqcd_2024_signal_private.txt'
         with open(inputfile,'r') as f:
             dataset_list = f.readlines()

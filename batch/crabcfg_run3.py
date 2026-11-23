@@ -87,6 +87,9 @@ if (data):
     config.Data.unitsPerJob = int(10e7/3)
 else:
     config.Data.unitsPerJob = int(10e4)
+if (data and (year==2025)):
+    config.Data.unitsPerJob = 8000000
+
 
 #something like this can be useful for limited disk availability
 #config.Data.inputBlocks = [
@@ -116,9 +119,21 @@ if (data and year==2025):
 config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_'+ntuple_version # DB no
 config.Data.publication = False
 config.Site.storageSite = "T2_US_UCSD"
+if os.environ.get("CRAB_RECOVERY2"):
+    config.General.requestName = config.General.requestName + os.environ.get("CRAB_REQSUFFIX", "_recovery2")
+    config.Data.splitting = 'Automatic'
+    config.Data.unitsPerJob = int(os.environ.get("CRAB_MINUTES", "720"))
+    config.Data.lumiMask = os.environ["CRAB_RECOVERY2"]
+    config.Data.outLFNDirBase = os.environ.get("CRAB_OUTDIR", config.Data.outLFNDirBase)
+    config.JobType.maxMemoryMB = 2500
+    config.Site.whitelist = ['T2_US_UCSD', 'T2_US_Caltech', 'T2_US_Wisconsin', 'T2_US_Purdue', 'T2_US_Nebraska', 'T2_US_MIT', 'T2_US_Florida', 'T2_US_Vanderbilt']
+    config.Data.ignoreLocality = True
+    if os.environ.get("CRAB_SITES"):
+        config.Site.whitelist = os.environ["CRAB_SITES"].split(",")
+
 
 print(config)
-if (year==2025 and os.environ.get("CRAB_DRYRUN", "0")=="1"):
+if os.environ.get("CRAB_DRYRUN", "0")=="1":
     crabCommand('submit', config = config, dryrun = True)
     quit()
 crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
