@@ -296,8 +296,8 @@ elif '2024' in opts.era or '2025' in opts.era:
         "L1_DoubleMu0_Upt6_IP_Min1_Upt4"
     ]
     # unconstrained pt seeds added in 2024F
-    if opts.era in ["2024F", "2024G", "2024H", "2024I"]:
-        L1Info = L1Info + ["L1_DoubleMu0_Upt6", "L1_DoubleMu0_Upt7", "L1_DoubleMu0_Upt8"]
+    if not opts.data or opts.era[:5] in ["2024F", "2024G", "2024H", "2024I"]:
+        L1Info = L1Info + ["L1_DoubleMu0_Upt6_SQ_er2p0", "L1_DoubleMu0_Upt7_SQ_er2p0", "L1_DoubleMu0_Upt8_SQ_er2p0"]
     # Single muon seeds (only unprescaled)
     L1Info = L1Info + ["L1_SingleMu10_SQ14_BMTF", "L1_SingleMu11_SQ14_BMTF"]
     #

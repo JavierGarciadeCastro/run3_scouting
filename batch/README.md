@@ -1,157 +1,299 @@
-## Run3 Info
-*(Last updated: 31 Jan 2025)*
+## How to run the skimmer (by year)
 
-The RAW data are skimmed and/or slimmed first, as in Run 2. The skim requires at least 2 Scouting Muons and at least 1 Scouting Vertex for data.
+Run from `lxplus8`, in the `batch` folder. All the releases are built for el8.
 
-* Do `. install_cmssw.sh`. This sets up a CMSSW environment with some EDFilters and some EDAnalyzers. (Note that `Scouting/NtupleMaker/test/producer_Run3.py` is the relevant PSet for slim/skimming)
+## 2025
 
-##### crab commands (used for initial test on signal and data)
+### Data
 
-* Submit crab jobs
-  * `source /cvmfs/cms.cern.ch/crab3/crab.sh` for crab commands
-  * submit with
+Setup:
 
 ```bash
-#For data/PFMonitor/public mc
-python3 crabcfg_run3.py 2022B
-python3 crabcfg_run3.py 2022C
-python3 crabcfg_run3.py 2022D
-python3 crabcfg_run3.py 2022E
-python3 crabcfg_run3.py 2022F
-python3 crabcfg_run3.py 2022G
-python3 crabcfg_run3.py 2022B PFMonitor
-python3 crabcfg_run3.py 2022C PFMonitor
-python3 crabcfg_run3.py 2022D PFMonitor
-python3 crabcfg_run3.py 2022E PFMonitor
-python3 crabcfg_run3.py 2022F PFMonitor
-python3 crabcfg_run3.py 2022G PFMonitor
-python3 crabcfg_run3.py 2022X /InclusiveDileptonMinBias_TuneCP5Plus_13p6TeV_pythia8/Run3Summer22DR-Pilot_124X_mcRun3_2022_realistic_v12-v4/AODSIM
-python3 crabcfg_run3.py 2022X /HTo2ZdTo2mu2x_MZd-10_Epsilon-1e-06_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM
-python3 crabcfg_run3.py 2022X /HTo2ZdTo2mu2x_MZd-10_Epsilon-1e-07_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM
-python3 crabcfg_run3.py 2022X /HTo2ZdTo2mu2x_MZd-10_Epsilon-3e-08_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM
-python3 crabcfg_run3.py 2022X /HTo2ZdTo2mu2x_MZd-10_Epsilon-5e-07_TuneCP5_13p6TeV_madgraph-pythia8/Run3Summer22EEDRPremix-124X_mcRun3_2022_realistic_postEE_v1-v2/AODSIM
+. install_cmssw.sh 2025   # CMSSW_15_0_15_patch1
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
 
-#For local MC
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/isuarez/ProjectMetis/DarkShower_ScenarioA_default_Run3Summer22GS_v0p30_AODSIM_v0p30
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/isuarez/ProjectMetis/DarkShower_ScenarioA_default_Run3Summer22GS_v1p3_AODSIM_v1p3
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/isuarez/ProjectMetis/DarkShower_ScenarioA_default_Run3Summer22GS_v1p4_AODSIM_v1p4
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/isuarez/ProjectMetis/DarkShower_ScenarioA_default_Run3Summer22GS_v1p5_AODSIM_v1p5
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/jthakral/ProjectMetis/DarkShower_ScenarioB_default_Run3Summer22GS_v0p32_AODSIM_v0p32
-python3 crabcfg_run3_mc.py /ceph/cms/store/user/jthakral/ProjectMetis/DarkShower_ScenarioC_default_Run3Summer22GS_v0p34_AODSIM_v0p34
-python3 crabcfg_run3_mc.py ///path to mc signal sample, but must be on T2 ucsd for this cfg to work///
+Local test:
 
-# For grid of central MC (will automatically access the published datasets for central signals, to be updated as signals are produced)
-. install_cmssw.sh [2022central or 2023central]
-python3 crabcfg_run3_centralmc.py [era = 2022, 2022postEE, 2023, 2023BPix] [model = HTo2ZdTo2mu2x]
+```bash
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2025G-ScoutingPF0 nevents=2000 output=test.root inputs=root://xrootd-cms.infn.it//store/data/Run2025G/ScoutingPF0/HLTSCOUT/v1/000/398/459/00000/893ee3a7-6176-4b82-8845-5d182eea1bf5.root
+```
 
-#2023 data/PFMonitor - must launch from separate env under cms 13_1_X
-python3 crabcfg_run3.py 2023B
-python3 crabcfg_run3.py 2023C  triggerV10
-python3 crabcfg_run3.py 2023C
-python3 crabcfg_run3.py 2023D
-python3 crabcfg_run3.py 2023B PFMonitor
+Full run (CRAB, if the local test runs correctly, with the same setup as the local test):
+
+```bash
+python3 crabcfg_run3.py 2025B ScoutingPFRun3   # B to D
+python3 crabcfg_run3.py 2025E ScoutingPF0      # from E
+python3 crabcfg_run3.py 2025E ScoutingPF1
+```
+
+### Signal
+
+Not available yet
+
+## 2024
+
+### Data
+
+Setup:
+
+```bash
+. install_cmssw.sh 2024   # CMSSW_14_0_18
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
+
+Local test:
+
+```bash
+# 2024C
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024C-ScoutingPFRun3 nevents=2000 output=test_2024C.root inputs=root://xrootd-cms.infn.it//store/data/Run2024C/ScoutingPFRun3/HLTSCOUT/v1/000/380/115/00000/ead74af7-66f7-4421-b11a-3d0f1be00f5b.root
+
+# 2024D
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024D-ScoutingPFRun3 nevents=2000 output=test_2024D.root inputs=root://cmsxrootd.fnal.gov//store/data/Run2024D/ScoutingPFRun3/HLTSCOUT/v1/000/380/360/00001/7999a7bf-8328-4922-861a-1c8286c5826e.root
+
+# 2024E
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024E-ScoutingPFRun3 nevents=2000 output=test_2024E.root inputs=root://xrootd-cms.infn.it//store/data/Run2024E/ScoutingPFRun3/HLTSCOUT/v1/000/381/384/00000/c12a3482-a47a-4154-864a-5b5dc26393e2.root
+
+# 2024F
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024F-ScoutingPFRun3 nevents=2000 output=test_2024F.root inputs=root://xrootd-cms.infn.it//store/data/Run2024F/ScoutingPFRun3/HLTSCOUT/v1/000/382/258/00000/c8d0d817-e6d2-445e-bcbb-0ce613fd75c5.root
+
+# 2024G
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024G-ScoutingPFRun3 nevents=2000 output=test_2024G.root inputs=root://xrootd-cms.infn.it//store/data/Run2024G/ScoutingPFRun3/HLTSCOUT/v1/000/385/764/00000/7d47b0c7-408a-4185-b4eb-6bbdcabebc74.root
+
+# 2024H
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024H-ScoutingPFRun3 nevents=2000 output=test_2024H.root inputs=root://xrootd-cms.infn.it//store/data/Run2024H/ScoutingPFRun3/HLTSCOUT/v1/000/385/986/00001/c2c19093-764c-4fc1-a1cd-5bec888248f1.root
+
+# 2024I
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=True era=2024I-ScoutingPFRun3 nevents=2000 output=test_2024I.root inputs=root://xrootd-cms.infn.it//store/data/Run2024I/ScoutingPFRun3/HLTSCOUT/v1/000/386/604/00001/d146630e-0151-4b4d-9571-5c7cf98879e8.root
+```
+
+Full run (CRAB):
+
+```bash
+python3 crabcfg_run3.py 2024C ScoutingPFRun3
+python3 crabcfg_run3.py 2024D ScoutingPFRun3
+python3 crabcfg_run3.py 2024E ScoutingPFRun3
+python3 crabcfg_run3.py 2024F ScoutingPFRun3
+python3 crabcfg_run3.py 2024G ScoutingPFRun3
+python3 crabcfg_run3.py 2024H ScoutingPFRun3
+python3 crabcfg_run3.py 2024I ScoutingPFRun3
+```
+
+### Central signal and background
+
+Setup:
+
+```bash
+. install_cmssw.sh 2024central   # CMSSW_15_0_2
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
+
+Local test:
+
+```bash
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/GluGluHToDarkShowers-ScenarioA_Par-ctau-1p0-mA-0p25-mpi-1_TuneCP5_13p6TeV_powheg-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2560000/883f003e-5660-4d9d-be26-5099dad5aed8.root
+```
+
+Full run (CRAB):
+
+```bash
+python3 crabcfg_run3_centralmc.py 2024 DQCD_sig
+```
+
+| Model | Samples | Dataset list |
+|---|---|---|
+| `DQCD_sig` | dark shower signal | `data/datasets_dqcd_2024_signal.txt` |
+| `HTo2ZdTo2mu2x` | HAHM signal | `data/datasets_hahm_2024_signal.txt` |
+| `DQCD_bkg` | QCD and MinBias | `data/datasets_dqcd_2024_background.txt` |
+
+### Private dark shower signal
+
+Setup:
+
+```bash
+. install_cmssw.sh 2024private   # CMSSW_14_0_21
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
+
+Local test:
+
+```bash
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 isMiniAOD=False nevents=1000 output=test.root inputs=<file>
+```
+
+Full run (CRAB):
+
+```bash
+python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
+```
+
+This reads `data/datasets_dqcd_2024_signal_private.txt`. CRAB allows at most 10 tasks in flight, so for long lists use the throttle, which submits new tasks as the old ones finish:
+
+```bash
+python3 crab_throttle.py <dataset list> --tag <ntuple_version> --state <state file>.json --sleep 1800
+```
+
+`--tag` must be the same as `ntuple_version` in `crabcfg_run3_centralmc.py`. To continue after a disconnection, run the same command with the same state file. A different state file submits everything again.
+
+## 2023
+
+### Data
+
+Setup:
+
+```bash
+. install_cmssw.sh 2023   # CMSSW_13_0_10
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
+
+Full run (CRAB):
+
+```bash
+python3 crabcfg_run3.py 2023B                          # B, C, D
+python3 crabcfg_run3.py 2023C triggerV10
+python3 crabcfg_run3.py 2023B PFMonitor                # B, C, D
 python3 crabcfg_run3.py 2023C PFMonitor triggerV10
-python3 crabcfg_run3.py 2023C PFMonitor
-python3 crabcfg_run3.py 2023D PFMonitor
 ```
 
-### Run on central signal MC:
+### Central signal
 
-Should setup the corresponding CMSSW version for each campaign e.g.
+Setup:
+
 ```bash
-. install_cmssw.sh 2022central
-. install_cmssw.sh 2023central
+. install_cmssw.sh 2023central   # CMSSW_13_0_14
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
 ```
 
-and then run:
+Full run (CRAB):
+
 ```bash
-python3 crabcfg_run3_centralmc.py [era] [signal]
+python3 crabcfg_run3_centralmc.py 2023 <model>
+python3 crabcfg_run3_centralmc.py 2023BPix <model>
 ```
 
-### Test run (local) on 2024 central signal MC:
+| Model | Samples | Dataset list |
+|---|---|---|
+| `HTo2ZdTo2mu2x` | HAHM signal | in the script |
+| `BToPhi`, `BToPhiExtra` | BToPhi signal | in the script |
+| `DQCD_sig` | dark shower signal | `data/datasets_dqcd_2023_1000mm.txt`, `data/datasets_dqcd_2023BPix_1000mm.txt` |
+
+## 2022
+
+### Data
+
+Setup:
+
 ```bash
-cd batch
-. install_cmssw.sh 2024central # This should create a CMSSW_15_0_2 rel (if it already existed before the previous step, delete it before doing .install)
-cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024  inputs=/store/mc/RunIII2024Summer24MiniAODv6/GluGluHToDarkShowers-ScenarioA_Par-ctau-1p0-mA-0p25-mpi-1_TuneCP5_13p6TeV_powheg-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2560000/883f003e-5660-4d9d-be26-5099dad5aed8.root nevents=100 output=/tmp/skimmer_test_signal.root
+. install_cmssw.sh   # CMSSW_12_6_0_patch1
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
 ```
 
-### Full run (crab) on 2024 central signal MC:
+Full run (CRAB):
+
 ```bash
-cd batch
-. install_cmssw.sh 2024central # This should create a CMSSW_15_0_2 rel (if it already existed before the previous step, delete it before doing .install)
-python3 crabcfg_run3_centralmc.py 2024 DQCD_sig # Dark shower signals, reading from data/datasets_dqcd_2024_signal.txt
-python3 crabcfg_run3_centralmc.py 2024 DQCD_bkg # QCD and MinBias background, reading from data/datasets_dqcd_2024_background.txt
-python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x # HAHM signal, reading from data/datasets_hahm_2024_signal.txt
+python3 crabcfg_run3.py 2022B                          # B to G
+python3 crabcfg_run3.py 2022B PFMonitor                # B to G
 ```
 
-**Note 1: Right now setup for central HAHM, central BtoPhi and part of private DQCD samples are available**
+### Central signal
 
-**Note 2: Since BtoPhi samples, output could be published in DAS so it can be accessed out UAF through xrd, this is used for DQCD samples produced outside**
+Setup:
 
-**Note 3: If running out of UAF and/or out of SnT Scouting group, crab details should be modifed to re-direct the output to a site with writting permission**
-
-To prepare the files that are used to run in condor the looper and the filler you just need to run:
+```bash
+. install_cmssw.sh 2022central   # CMSSW_12_4_16
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
 ```
+
+Full run (CRAB):
+
+```bash
+python3 crabcfg_run3_centralmc.py 2022 <model>
+python3 crabcfg_run3_centralmc.py 2022postEE <model>
+```
+
+| Model | Samples | Dataset list |
+|---|---|---|
+| `HTo2ZdTo2mu2x` | HAHM signal | in the script |
+| `BToPhi`, `BToPhiExtra` | BToPhi signal | in the script |
+| `DQCD_sig` | dark shower signal | `data/datasets_dqcd_2022_1000mm.txt`, `data/datasets_dqcd_2022postEE_1000mm.txt` |
+
+### Local MC and single datasets
+
+```bash
+python3 crabcfg_run3_mc.py <path to the sample at T2_US_UCSD>
+python3 crabcfg_run3.py 2022X <dataset>
+```
+
+For example:
+
+```bash
+python3 crabcfg_run3_mc.py /ceph/cms/store/user/isuarez/ProjectMetis/DarkShower_ScenarioA_default_Run3Summer22GS_v0p30_AODSIM_v0p30
+python3 crabcfg_run3.py 2022X /InclusiveDileptonMinBias_TuneCP5Plus_13p6TeV_pythia8/Run3Summer22DR-Pilot_124X_mcRun3_2022_realistic_v12-v4/AODSIM
+```
+
+BToPhi and private DQCD outputs produced outside UAF can be published in DAS and read with xrootd.
+
+## Recovering part of a data era
+
+To process only some lumisections, with automatic splitting, set these variables and use the same command:
+
+| Variable | Meaning |
+|---|---|
+| `CRAB_RECOVERY2` | JSON with the lumis to process (turns this mode on) |
+| `CRAB_REQSUFFIX` | suffix of the task name, different for each submission |
+| `CRAB_MINUTES` | target job length in minutes (default 720) |
+| `CRAB_SITES` | comma-separated list of sites where the jobs can run |
+| `CRAB_OUTDIR` | output directory, e.g. `/store/group/Run3Scouting/RAWScouting_2p0_L1fix` (default: the usual one) |
+
+```bash
+export CRAB_RECOVERY2=data/L1fix_2024F_a.json CRAB_REQSUFFIX=_L1fix_a CRAB_MINUTES=1440
+export CRAB_OUTDIR=/store/group/Run3Scouting/RAWScouting_2p0_L1fix
+python3 crabcfg_run3.py 2024F ScoutingPFRun3
+unset CRAB_RECOVERY2 CRAB_REQSUFFIX CRAB_MINUTES CRAB_OUTDIR
+```
+
+* Find where the data are on disk with `dasgoclient -query="site dataset=/ScoutingPFRun3/Run2024F-v1/HLTSCOUT"` and choose sites close to them. Exit code 8028 means that the input could not be opened.
+* Submitting the same lumis twice, and also automatic splitting, can leave the same lumi in several files. Remove the duplicates before running the looper.
+
+## Check the skim
+
+Run a local test before submitting, and check that the L1 bits are filled:
+
+```python
+import ROOT
+f = ROOT.TFile.Open("test.root")
+t = f.Get("Events")
+fired = t.GetEntries("Sum$(bools_triggerMaker_l1result_SLIM.obj && doubles_triggerMaker_l1prescale_SLIM.obj==1)>0")
+print(fired / t.GetEntries())
+```
+
+The fraction of events with an unprescaled L1 seed must not be 0: in 2024 it is 0.83 in the data F file above, and 0.3 in a private signal file. Repeat the check on the CRAB output, for every sample and every task.
+
+| Input | L1 input tag |
+|---|---|
+| Data and private MC | `gtStage2Digis` (unpacked in the skim) |
+| Central MC | `gtStage2Digis::RECO` |
+
+## Inputs for the looper and filler
+
+Select the model inside the script and run:
+
+```bash
 python3 setupCentralSignals_remote.py
 ```
-**Note:** You will have to select inside the model you want to run on.
 
-Then, the following files will be created:
-```
-centralDatasets.txt                           # input for looper
-runScoutingLooper_onCondor_CentralSignal.sub  # input for looper
-runScoutingHistos_onCondor_CentralSignal.sub  # input for filler
-```
+It creates:
 
-
-## Run2 Info
-
-RAW ntuples are generated/slimmed first, then these are made into babies.
-
-### (Slimmed) RAW ntuples
-
-#### Data
-
-RAW scouting data is already available, but it stores huge FED and track info, so we first skim it with CRAB to events with
-at least 2 Scouting Muons and at least 1 Scouting Vertex, and we add some extra information, while preserving the EDM structure.
-So in principle, one can run the same CMSSW code on these new ntuples to add/compute other stuff.
-* Do `. install_cmssw.sh`. This sets up a CMSSW environment with some EDFilters and some EDAnalyzers. (Note that `Scouting/NtupleMaker/test/producer.py` is the relevant PSet for slim/skimming)
-
-##### Manual way
-* Submit crab jobs
-  * `source /cvmfs/cms.cern.ch/crab3/crab.sh` for crab commands
-  * submit with
-```bash
-# A-D
-crab submit -c crabcfg.py General.requestName="skim_2018A_v4" Data.inputDataset="/ScoutingCaloMuon/Run2018A-v1/RAW" ;
-crab submit -c crabcfg.py General.requestName="skim_2018B_v4" Data.inputDataset="/ScoutingCaloMuon/Run2018B-v1/RAW" ;
-crab submit -c crabcfg.py General.requestName="skim_2018C_v4" Data.inputDataset="/ScoutingCaloMuon/Run2018C-v1/RAW" ;
-crab submit -c crabcfg.py General.requestName="skim_2018D_v4" Data.inputDataset="/ScoutingCaloMuon/Run2018D-v1/RAW" ;
-
-# C again, but just the unblinded set
-crab submit -c crabcfg.py General.requestName="skim_2018D_v4_unblind1fb" Data.inputDataset="/ScoutingCaloMuon/Run2018D-v1/RAW" Data.lumiMask="data/unblind_2018C_1fb_JSON.txt" Data.unitsPerJob=2000000;
-```
-  * Spam `crab status -c crab/<requestname>`, `crab resubmit -c ...`
-
-##### Nicer way
-* Submit crab jobs
-  * `cmsenv` in the checked out release directory
-  * `source /cvmfs/cms.cern.ch/crab3/crab.sh` for crab commands
-  * Edit `multicrab.py` and `python multicrab.py` to submit
-  * It also gives you a nice monitoring page (see the bottom of the script)
-
-#### MC
-* First submit jobs to generate and make RAW/scouting-tier data in the [generation folder](../generation/)
-* Once those are done, proceed to the section on making babies below.
-
-
-### Flattened babies (non-EDM)
-
-* Run `python babymaker.py -h` to see all the options. A list of files can be specified. Note that the `-a` option will retain all events:
-no skim of >=1 DV and >=2 Muon is performed (useful for MC samples where acceptance needs to be calculated).
-
-* Clone [ProjectMetis](https://github.com/aminnj/ProjectMetis/) and source its environment
-* Run the babymaker on a file locally to test
-* Edit `submit_baby_jobs.py` to have the right paths (search for "hadoop") to the crab output, including the request names, output tags, and skimming options (search for "skim")
-* `./make_tar.sh` to make the tarball for the jobs
-* `python submit_baby_jobs.py`
+| File | Used by |
+|---|---|
+| `centralDatasets.txt` | looper |
+| `runScoutingLooper_onCondor_CentralSignal.sub` | looper |
+| `runScoutingHistos_onCondor_CentralSignal.sub` | filler |
