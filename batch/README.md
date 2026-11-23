@@ -100,14 +100,18 @@ cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=10
 Full run (CRAB):
 
 ```bash
-python3 crabcfg_run3_centralmc.py 2024 DQCD_sig
+python3 crabcfg_run3_centralmc.py 2024 minBias_2024          # MinBias
+python3 crab_throttle.py DQCD_sig --match ScenarioA --sleep 1800   # dark shower signal
+python3 crab_throttle.py HTo2ZdTo2mu2x --sleep 1800               # HAHM signal
 ```
 
 | Model | Samples | Dataset list |
 |---|---|---|
-| `DQCD_sig` | dark shower signal | `data/datasets_dqcd_2024_signal.txt` |
+| `minBias_2024` | MinBias | `data/datasets_dqcd_2024_background.txt` |
+| `DQCD_sig` | dark shower signal (without `--match`: all the scenarios) | `data/datasets_dqcd_2024_signal.txt` |
 | `HTo2ZdTo2mu2x` | HAHM signal | `data/datasets_hahm_2024_signal.txt` |
-| `DQCD_bkg` | QCD and MinBias | `data/datasets_dqcd_2024_background.txt` |
+
+CRAB allows at most 10 tasks in flight per user. The throttle submits new tasks as the old ones finish, and needs the terminal open. To continue after a disconnection, run the same command in the same folder. If you have other tasks running, lower the limit with `--max`, and run only one throttle at a time.
 
 ### Private dark shower signal
 
@@ -128,16 +132,10 @@ cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 isMiniAOD=
 Full run (CRAB):
 
 ```bash
-python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
+python3 crab_throttle.py DQCD_sig_private --sleep 1800
 ```
 
-This reads `data/datasets_dqcd_2024_signal_private.txt`. CRAB allows at most 10 tasks in flight, so for long lists use the throttle, which submits new tasks as the old ones finish:
-
-```bash
-python3 crab_throttle.py <dataset list> --tag <ntuple_version> --state <state file>.json --sleep 1800
-```
-
-`--tag` must be the same as `ntuple_version` in `crabcfg_run3_centralmc.py`. To continue after a disconnection, run the same command with the same state file. A different state file submits everything again.
+This reads `data/datasets_dqcd_2024_signal_private.txt`, and works as the throttle for the central samples.
 
 ## 2023
 
@@ -251,11 +249,11 @@ To process only some lumisections, with automatic splitting, set these variables
 | `CRAB_REQSUFFIX` | suffix of the task name, different for each submission |
 | `CRAB_MINUTES` | target job length in minutes (default 720) |
 | `CRAB_SITES` | comma-separated list of sites where the jobs can run |
-| `CRAB_OUTDIR` | output directory, e.g. `/store/group/Run3Scouting/RAWScouting_2p0_L1fix` (default: the usual one) |
+| `CRAB_OUTDIR` | output directory, e.g. `/store/group/Run3Scouting/RAWScouting_2p0_recovery` (default: the usual one) |
 
 ```bash
-export CRAB_RECOVERY2=data/L1fix_2024F_a.json CRAB_REQSUFFIX=_L1fix_a CRAB_MINUTES=1440
-export CRAB_OUTDIR=/store/group/Run3Scouting/RAWScouting_2p0_L1fix
+export CRAB_RECOVERY2=data/<lumis>.json CRAB_REQSUFFIX=_recovery1 CRAB_MINUTES=1440
+export CRAB_OUTDIR=/store/group/Run3Scouting/RAWScouting_2p0_recovery
 python3 crabcfg_run3.py 2024F ScoutingPFRun3
 unset CRAB_RECOVERY2 CRAB_REQSUFFIX CRAB_MINUTES CRAB_OUTDIR
 ```
@@ -275,7 +273,7 @@ fired = t.GetEntries("Sum$(bools_triggerMaker_l1result_SLIM.obj && doubles_trigg
 print(fired / t.GetEntries())
 ```
 
-The fraction of events with an unprescaled L1 seed must not be 0: in 2024 it is 0.83 in the data F file above, and 0.3 in a private signal file. Repeat the check on the CRAB output, for every sample and every task.
+The fraction of events with an unprescaled L1 seed must not be 0: in 2024 it is about 0.87 in the data F file above, and 0.3 in a private signal file. Repeat the check on the CRAB output, for every sample and every task.
 
 | Input | L1 input tag |
 |---|---|

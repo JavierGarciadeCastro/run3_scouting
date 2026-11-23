@@ -33,6 +33,8 @@ data=False
 #ntuple_version = "vdqcd_final_8p0"
 #ntuple_version = "btophi_extra_8p0"
 ntuple_version = "_dqcd_2024"
+if era=="2024":
+    ntuple_version = "_dqcd_2024_L1seeds"
 #ntuple_version = "_minBias_2024"
 
 # Setup working environment
@@ -63,13 +65,13 @@ if (len(sys.argv)>2):
     config.Site.whitelist = ["T2_US_UCSD", "T2_US_Florida", "T2_US_Wisconsin", "T2_US_Nebraska", "T2_US_Purdue"]
     config.Data.ignoreLocality = True
     if "HTo2ZdTo2mu2x" in sys.argv[2]:
-        config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_HTo2ZdTo2mu2x_" + str(year) # DB no
+        config.Data.outLFNDirBase = "/store/group/Run3Scouting/RAWScouting_HTo2ZdTo2mu2x_" + str(year) + ("_L1seeds" if era=="2024" else "") # DB no
         config.Data.inputDBS = 'global'
         config.Data.publication = True
         if era == "2024":
             # Central HAHM 2024 MiniAOD signals, published to DBS global as
             # /HTo2ZdTo2Mu2X_Par-MZd-{mass}-Ctau-{ctau}mm_TuneCP5_13p6TeV_madgraph-pythia8/RunIII2024Summer24MiniAODv6-150X_mcRun3_2024_realistic_v2-v2/MINIAODSIM
-            inputfile = 'data/datasets_hahm_2024_signal.txt'
+            inputfile = os.environ.get('CRAB_DATASETS', 'data/datasets_hahm_2024_signal.txt')
             with open(inputfile,'r') as f:
                 dataset_list = f.readlines()
             for dataset_name in dataset_list:
@@ -395,13 +397,13 @@ if (len(sys.argv)>2):
         # Private RAW/HLT samples must be skimmed in CMSSW_14_0_21 (cmsenv in batch/CMSSW_14_0_21)
         if os.path.basename(os.path.normpath(base)) != "CMSSW_14_0_21":
             sys.exit("ERROR: DQCD_sig_private must be submitted from CMSSW_14_0_21, but CMSSW_BASE is " + base)
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private_L1fix_CMSSW14'
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024_private_L1seeds'
         config.Data.inputDBS = 'phys03'
         config.Data.splitting = 'FileBased'
         config.Data.unitsPerJob = int(10)
         config.Data.publication = True
-        config.Data.outputDatasetTag = "private-Skim_final_{era}-v4".format(era=era)
-        inputfile = 'data/datasets_dqcd_2024_signal_private.txt'
+        config.Data.outputDatasetTag = "private-Skim_final_{era}-v5".format(era=era)
+        inputfile = os.environ.get('CRAB_DATASETS', 'data/datasets_dqcd_2024_signal_private.txt')
         with open(inputfile,'r') as f:
             dataset_list = f.readlines()
         for dataset_name in dataset_list:
@@ -422,7 +424,7 @@ if (len(sys.argv)>2):
             except:
                 print('centralSkim__{}_{}_mpi-{}_mA-{}_ctau-{}mm_{} cant be launched! Skipping...'.format(model_name, era, mpi, mA, t, ntuple_version))
     elif "DQCD_sig" in sys.argv[2]:
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024'
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_sig2024' + ('_L1seeds' if era=='2024' else '')
         #config.Data.inputDBS = 'phys03'
         config.Data.inputDBS = 'global'
         #config.Data.splitting = 'FileBased'
@@ -440,7 +442,7 @@ if (len(sys.argv)>2):
         if era=="2023BPix":
             inputfile = 'data/datasets_dqcd_2023BPix_1000mm.txt'
         if era=="2024":
-            inputfile = 'data/datasets_dqcd_2024_signal.txt'
+            inputfile = os.environ.get('CRAB_DATASETS', 'data/datasets_dqcd_2024_signal.txt')
         with open(inputfile,'r') as f:
             dataset_list = f.readlines()
         for dataset_name in dataset_list:
@@ -668,7 +670,7 @@ if (len(sys.argv)>2):
     elif "DQCD_bkg" in sys.argv[2]:
         if era != "2024":
             print("DQCD_bkg only supported for era=2024"); quit()
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_dqcd'
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_dqcd_L1seeds'
         config.Data.inputDBS = 'global'
         config.Data.splitting = 'EventAwareLumiBased'
         config.Data.unitsPerJob = int(10e4)
@@ -693,8 +695,8 @@ if (len(sys.argv)>2):
     elif "minBias_2024" in sys.argv[2]:
         if era != "2024":
             print("minBias_2024 only supported for era=2024"); quit()
-        ntuple_version_mb = "_minBias_2024"
-        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_minBias'
+        ntuple_version_mb = "_minBias_2024_L1seeds"
+        config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_DQCD_bkg2024_v_minBias_L1seeds'
         config.Data.inputDBS = 'global'
         config.Data.splitting = 'FileBased'
         config.Data.unitsPerJob = 10
