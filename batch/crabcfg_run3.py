@@ -131,9 +131,45 @@ if os.environ.get("CRAB_RECOVERY2"):
     if os.environ.get("CRAB_SITES"):
         config.Site.whitelist = os.environ["CRAB_SITES"].split(",")
 
+us_sites = ['T2_US_UCSD', 'T2_US_Caltech', 'T2_US_Wisconsin', 'T2_US_Purdue', 'T2_US_Nebraska', 'T2_US_MIT', 'T2_US_Florida']
+eu_sites = ['T2_CH_CERN', 'T2_DE_RWTH', 'T2_DE_DESY', 'T2_CH_CSCS', 'T2_BE_IIHE', 'T2_IT_Pisa', 'T2_IT_Legnaro', 'T2_ES_IFCA']
+auto_eras = {
+    "2024F": (381944, 383779, 3, us_sites),
+    "2024G": (383780, 385813, 3, eu_sites),
+    "2024H": (385814, 386408, 1, eu_sites),
+    "2024I": (386409, 386951, 1, us_sites),
+}
 
-print(config)
-if os.environ.get("CRAB_DRYRUN", "0")=="1":
-    crabCommand('submit', config = config, dryrun = True)
-    quit()
-crabCommand('submit', config = config, dryrun = False) ## dryrun = True for local test
+def submit():
+    print(config)
+    crabCommand('submit', config = config, dryrun = os.environ.get("CRAB_DRYRUN", "0")=="1")
+
+if era in auto_eras and extra=="ScoutingPFRun3" and not os.environ.get("CRAB_RECOVERY2"):
+    import json
+    first, last, nparts, sites = auto_eras[era]
+    lumis = {r: v for r, v in json.load(open(config.Data.lumiMask)).items() if first <= int(r) <= last}
+    nlumis = {r: sum(y-x+1 for x, y in v) for r, v in lumis.items()}
+    parts = [{} for i in range(nparts)]
+    done = 0
+    for r in sorted(lumis, key=int):
+        parts[min(nparts-1, done*nparts//sum(nlumis.values()))][r] = lumis[r]
+        done += nlumis[r]
+    name = config.General.requestName
+    config.Data.splitting = 'Automatic'
+    config.Data.unitsPerJob = 1440
+    config.Data.ignoreLocality = True
+    config.Data.outLFNDirBase = '/store/group/Run3Scouting/RAWScouting_'+ntuple_version+'_L1seeds'
+    config.JobType.maxMemoryMB = 2500
+    config.Site.whitelist = os.environ["CRAB_SITES"].split(",") if os.environ.get("CRAB_SITES") else sites
+    for i in range(nparts):
+        label = "abc"[i]
+        config.General.requestName = "{}_L1seeds_{}".format(name, label)
+        if os.path.isdir(os.path.join(config.General.workArea, "crab_"+config.General.requestName)):
+            print("{} was already submitted, skipping".format(config.General.requestName))
+            continue
+        config.Data.lumiMask = "data/L1seeds_{}_{}.json".format(era, label)
+        with open(config.Data.lumiMask, "w") as f:
+            json.dump(parts[i], f)
+        submit()
+else:
+    submit()
