@@ -94,7 +94,11 @@ voms-proxy-init -voms cms -rfc -valid 192:00
 Local test:
 
 ```bash
+# Dark shower signal
 cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/GluGluHToDarkShowers-ScenarioA_Par-ctau-1p0-mA-0p25-mpi-1_TuneCP5_13p6TeV_powheg-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2560000/883f003e-5660-4d9d-be26-5099dad5aed8.root
+
+# HAHM signal
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/HTo2ZdTo2Mu2X_Par-MZd-5p0-Ctau-10mm_TuneCP5_13p6TeV_madgraph-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2540000/b68d87fb-241a-4048-8490-d4b29347afe1.root
 ```
 
 Full run (CRAB):
@@ -102,7 +106,7 @@ Full run (CRAB):
 ```bash
 python3 crabcfg_run3_centralmc.py 2024 minBias_2024          # MinBias
 python3 crab_throttle.py DQCD_sig --match ScenarioA --sleep 1800   # dark shower signal
-python3 crab_throttle.py HTo2ZdTo2mu2x --sleep 1800               # HAHM signal
+python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x   # HAHM signal, all the samples at once
 ```
 
 | Model | Samples | Dataset list |
@@ -111,7 +115,15 @@ python3 crab_throttle.py HTo2ZdTo2mu2x --sleep 1800               # HAHM signal
 | `DQCD_sig` | dark shower signal (without `--match`: all the scenarios) | `data/datasets_dqcd_2024_signal.txt` |
 | `HTo2ZdTo2mu2x` | HAHM signal | `data/datasets_hahm_2024_signal.txt` |
 
-CRAB allows at most 10 tasks in flight per user. The throttle submits new tasks as the old ones finish, and needs the terminal open. To continue after a disconnection, run the same command in the same folder. If you have other tasks running, lower the limit with `--max`, and run only one throttle at a time.
+The HAHM signal is small (107 tasks, about 650 jobs in total), so it is sent all at once. If the submission stops halfway, run the same command again: the samples that already have a task are skipped. To check the tasks:
+
+```bash
+for d in crab_centralSkim__HTo2Zd*_L1seeds; do echo $d; crab status -d $d | grep -E "Status on the scheduler|finished|failed"; done
+```
+
+If a task has failed jobs, use `crab resubmit -d <task folder>`.
+
+The dark shower signal has many more jobs, and CRAB allows at most 10 of these tasks in flight per user. The throttle submits new tasks as the old ones finish, and needs the terminal open. To continue after a disconnection, run the same command in the same folder. If you have other tasks running, lower the limit with `--max`, and run only one throttle at a time.
 
 ### Private dark shower signal
 
