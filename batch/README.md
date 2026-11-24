@@ -115,16 +115,6 @@ python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x   # HAHM signal, all the sa
 | `DQCD_sig` | dark shower signal (without `--match`: all the scenarios) | `data/datasets_dqcd_2024_signal.txt` |
 | `HTo2ZdTo2mu2x` | HAHM signal | `data/datasets_hahm_2024_signal.txt` |
 
-The HAHM signal is small (107 tasks, about 650 jobs in total), so it is sent all at once. If the submission stops halfway, run the same command again: the samples that already have a task are skipped. To check the tasks:
-
-```bash
-for d in crab_centralSkim__HTo2Zd*_L1seeds; do echo $d; crab status -d $d | grep -E "Status on the scheduler|finished|failed"; done
-```
-
-If a task has failed jobs, use `crab resubmit -d <task folder>`.
-
-The dark shower signal has many more jobs, and CRAB allows at most 10 of these tasks in flight per user. The throttle submits new tasks as the old ones finish, and needs the terminal open. To continue after a disconnection, run the same command in the same folder. If you have other tasks running, lower the limit with `--max`, and run only one throttle at a time.
-
 ### Private dark shower signal
 
 Setup:
