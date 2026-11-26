@@ -81,7 +81,7 @@ python3 crabcfg_run3.py 2024H ScoutingPFRun3
 python3 crabcfg_run3.py 2024I ScoutingPFRun3
 ```
 
-### Central signal and background
+### MinBias and HAHM signal
 
 Setup:
 
@@ -94,28 +94,42 @@ voms-proxy-init -voms cms -rfc -valid 192:00
 Local test:
 
 ```bash
-# Dark shower signal
-cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/GluGluHToDarkShowers-ScenarioA_Par-ctau-1p0-mA-0p25-mpi-1_TuneCP5_13p6TeV_powheg-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2560000/883f003e-5660-4d9d-be26-5099dad5aed8.root
-
-# HAHM signal
 cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/HTo2ZdTo2Mu2X_Par-MZd-5p0-Ctau-10mm_TuneCP5_13p6TeV_madgraph-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2540000/b68d87fb-241a-4048-8490-d4b29347afe1.root
 ```
 
 Full run (CRAB):
 
 ```bash
-python3 crabcfg_run3_centralmc.py 2024 minBias_2024          # MinBias
-python3 crab_throttle.py DQCD_sig --match ScenarioA --sleep 1800   # dark shower signal
-python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x   # HAHM signal, all the samples at once
+python3 crabcfg_run3_centralmc.py 2024 minBias_2024    # MinBias
+python3 crabcfg_run3_centralmc.py 2024 HTo2ZdTo2mu2x   # HAHM signal
 ```
 
-| Model | Samples | Dataset list |
-|---|---|---|
-| `minBias_2024` | MinBias | `data/datasets_dqcd_2024_background.txt` |
-| `DQCD_sig` | dark shower signal (without `--match`: all the scenarios) | `data/datasets_dqcd_2024_signal.txt` |
-| `HTo2ZdTo2mu2x` | HAHM signal | `data/datasets_hahm_2024_signal.txt` |
+### Dark shower signal
 
-### Private dark shower signal
+#### Central samples
+
+Setup:
+
+```bash
+. install_cmssw.sh 2024central   # CMSSW_15_0_2
+source /cvmfs/cms.cern.ch/crab3/crab.sh
+voms-proxy-init -voms cms -rfc -valid 192:00
+```
+
+Local test:
+
+```bash
+cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 nevents=100 output=test.root inputs=/store/mc/RunIII2024Summer24MiniAODv6/GluGluHToDarkShowers-ScenarioA_Par-ctau-1p0-mA-0p25-mpi-1_TuneCP5_13p6TeV_powheg-pythia8/MINIAODSIM/150X_mcRun3_2024_realistic_v2-v2/2560000/883f003e-5660-4d9d-be26-5099dad5aed8.root
+```
+
+Full run (CRAB):
+
+```bash
+python3 crab_throttle.py DQCD_sig --match ScenarioA --sleep 1800    # Scenario A
+python3 crab_throttle.py DQCD_sig --match ScenarioB1 --sleep 1800   # Scenario B1
+```
+
+#### Private samples
 
 Setup:
 
@@ -134,7 +148,13 @@ cmsRun Scouting/NtupleMaker/test/producer_Run3.py data=False era=2024 isMiniAOD=
 Full run (CRAB):
 
 ```bash
+# Scenario A
 python3 crab_throttle.py DQCD_sig_private --sleep 1800
+
+# Scenario B1, one part after the other
+CRAB_DATASETS=data/datasets_dqcd_2024_signal_private_B1_part1.txt python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
+CRAB_DATASETS=data/datasets_dqcd_2024_signal_private_B1_part2.txt python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
+CRAB_DATASETS=data/datasets_dqcd_2024_signal_private_B1_part3.txt python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
 ```
 
 This reads `data/datasets_dqcd_2024_signal_private.txt`, and works as the throttle for the central samples.
