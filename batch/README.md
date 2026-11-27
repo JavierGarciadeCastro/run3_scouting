@@ -157,8 +157,6 @@ CRAB_DATASETS=data/datasets_dqcd_2024_signal_private_B1_part2.txt python3 crabcf
 CRAB_DATASETS=data/datasets_dqcd_2024_signal_private_B1_part3.txt python3 crabcfg_run3_centralmc.py 2024 DQCD_sig_private
 ```
 
-This reads `data/datasets_dqcd_2024_signal_private.txt`, and works as the throttle for the central samples.
-
 ## 2023
 
 ### Data
